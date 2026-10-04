@@ -1,0 +1,20 @@
+English jfk.wav and speech.mp4: public-domain John F. Kennedy inaugural address,
+distributed in whisper.cpp v1.7.6. Video containers were created for these tests.
+
+Mandarin and Cantonese: Google FLEURS, CC BY 4.0
+https://creativecommons.org/licenses/by/4.0/
+https://huggingface.co/datasets/google/fleurs
+Revision: 70bb2e84b976b7e960aa89f1c648e09c59f894dd
+Mandarin test recording: cmn_hans_cn/10325559490685159122.wav
+Cantonese test recording: yue_hant_hk/5675804756500490697.wav
+Reference sentences are retained in references.json.
+offset-mandarin.mp4 delays the Mandarin audio by two seconds.
+Audio was converted to AAC in black-frame H.264 videos. mixed.mp4 concatenates
+English and Mandarin with a 1.5-second pause. mixed-all.mp4 uses the first 4.2/6/7 seconds of English/Mandarin/Cantonese, with 1.5-second pauses. boundary.mp4 removes Mandarin
+silences and repeats the sentence six times to span a 30-second section edge.
+No source recording text was translated or converted between Chinese scripts.
+
+Attribution: Conneau, Alex; Ma, Min; Khanuja, Simran; Zhang, Yu; Axelrod, Vera;
+Dalmia, Siddharth; Riesa, Jason; Rivera, Clara; Bapna, Ankur (2022).
+FLEURS: Few-shot Learning Evaluation of Universal Representations of Speech.
+arXiv:2205.12446. Google FLEURS contributors.
