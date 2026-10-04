@@ -43,7 +43,7 @@ class TranscriptionService : Service() {
         if (Build.VERSION.SDK_INT >= 26) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL, "Video transcription", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Progress and cancellation for offline transcription"
+                    description = "Progress and pause controls for offline transcription"
                 })
         }
     }
@@ -57,7 +57,7 @@ class TranscriptionService : Service() {
             return START_NOT_STICKY
         }
         if (job != null) {
-            repository.report("A transcription is already running. Cancel it before importing another video.")
+            repository.report("A transcription is already running. Stop it before importing another video.")
             return START_NOT_STICKY
         }
         val jobId = intent?.getStringExtra("jobId")
@@ -114,13 +114,13 @@ class TranscriptionService : Service() {
                 withContext(NonCancellable + Dispatchers.IO) {
                     if (!token.isCommitted()) {
                         repository.finish(if (timeoutMessage == null) ProcessingStage.CANCELLED else ProcessingStage.FAILED,
-                            timeoutMessage ?: "Transcription cancelled. Resume or discard the retained job. Your last saved result is unchanged.")
+                            timeoutMessage ?: STOPPED_MESSAGE)
                     }
                 }
             } catch (error: Exception) {
                 withContext(NonCancellable + Dispatchers.IO) {
                     repository.finish(if (token.isCancelled() && timeoutMessage == null) ProcessingStage.CANCELLED else ProcessingStage.FAILED,
-                        timeoutMessage ?: if (token.isCancelled()) "Transcription cancelled. Resume or discard the retained job. Your last saved result is unchanged." else failureMessage(error))
+                        timeoutMessage ?: if (token.isCancelled()) STOPPED_MESSAGE else failureMessage(error))
                 }
             } catch (_: OutOfMemoryError) {
                 withContext(NonCancellable + Dispatchers.IO) {
@@ -182,16 +182,19 @@ class TranscriptionService : Service() {
     private fun notification(stage: ProcessingStage, percent: Int?): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val cancel = PendingIntent.getService(this, 1, Intent(this, TranscriptionService::class.java).setAction(CANCEL), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val cancelling = repository.state.value.cancelling
+        val state = repository.state.value
+        val cancelling = state.cancelling
+        val status = if (cancelling) state.stoppingLabel() else stage.label()
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_transcription)
             .setContentTitle("Video to text")
-            .setContentText(if (cancelling) "Cancelling…" else stage.label())
+            .setContentText(status)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (state.isActive) "$status\n${state.stopExplanation()}" else status))
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setProgress(100, percent ?: 0, percent == null || cancelling)
-            .addAction(0, "Cancel", cancel)
+            .apply { if (state.isActive && !cancelling) addAction(0, state.stopActionLabel(), cancel) }
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
@@ -212,18 +215,9 @@ class TranscriptionService : Service() {
         private const val NOTIFICATION = 1
         private const val START = "com.example.video2text.TRANSCRIBE"
         private const val CANCEL = "com.example.video2text.CANCEL"
+        private const val STOPPED_MESSAGE = "Processing stopped. Resume or discard the retained job. Your last saved result is unchanged."
         fun startIntent(context: Context, jobId: String, options: TranscriptionOptions) = Intent(context, TranscriptionService::class.java)
             .setAction(START).putExtra("jobId", jobId).putExtra("language", options.language.name).putExtra("model", options.model.name)
         fun cancelIntent(context: Context) = Intent(context, TranscriptionService::class.java).setAction(CANCEL)
     }
-}
-
-internal fun ProcessingStage.label(): String = when (this) {
-    ProcessingStage.IDLE -> "Ready to import"
-    ProcessingStage.PREPARING -> "Preparing video or offline model"
-    ProcessingStage.EXTRACTING -> "Extracting audio"
-    ProcessingStage.TRANSCRIBING -> "Transcribing speech"
-    ProcessingStage.COMPLETED -> "Transcription complete"
-    ProcessingStage.CANCELLED -> "Transcription cancelled"
-    ProcessingStage.FAILED -> "Unable to finish transcription"
 }

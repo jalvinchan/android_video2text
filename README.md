@@ -13,6 +13,15 @@ Cantonese can be chosen before Turbo is installed; its model page offers only
 Turbo, with download access. Model management returns to the same setup choices.
 Settings become immutable when Start is pressed. The processing page shows them.
 
+Processing controls reflect what can be retained: **Cancel import** discards an
+incomplete copy; **Stop for now** during extraction keeps the source video but
+restarts extraction on Resume; **Pause transcription** keeps saved audio and
+completed speech sections. Resume repeats the unfinished section, containing at
+most 30 seconds of audio. The processing screen and notification explain this.
+The retained-job card offers **Resume**, shows saved progress and fixed settings,
+and explains where processing continues. **Discard unfinished job** remains a
+separate action with confirmation and keeps the previous successful transcript.
+
 | Language | Behavior |
 | --- | --- |
 | Auto (default) | Detects English/Mandarin per speech section with Base or Small; also Cantonese with Turbo |

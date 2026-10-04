@@ -78,7 +78,7 @@ class TranscriptionViewModel(application: Application, private val savedState: S
                 withContext(Dispatchers.IO) { repository.importVideo(uri, token) }
                 navigate(TranscriptionPage.LANGUAGE)
             } catch (error: Exception) {
-                if (state.value.isActive && state.value.activeOptions != null) report("A transcription is already running. Cancel it before importing another video.")
+                if (state.value.isActive && state.value.activeOptions != null) report("A transcription is already running. Stop it before importing another video.")
                 else if (state.value.isActive) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.finish(if (token.isCancelled()) ProcessingStage.CANCELLED else ProcessingStage.FAILED, if (token.isCancelled()) "Import cancelled. Select the video again." else error.message ?: "The video could not be imported. Check access and free storage.") }
                 else report(error.message ?: "The video could not be imported. Check access and free storage.")
             } finally { importCancellation = null }
@@ -105,11 +105,11 @@ class TranscriptionViewModel(application: Application, private val savedState: S
         }
     }
 
-    fun cancel() {
+    fun stop() {
         importCancellation?.let { it.cancel(); repository.cancelling(); return }
         if (state.value.isActive) {
             try { app.startService(TranscriptionService.cancelIntent(app)) }
-            catch (_: RuntimeException) { report("Cancellation could not be requested. Reopen the app and try again.") }
+            catch (_: RuntimeException) { report("Stopping could not be requested. Reopen the app and try again.") }
         }
     }
 

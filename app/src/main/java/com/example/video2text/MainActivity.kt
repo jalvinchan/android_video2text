@@ -210,9 +210,10 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                             Text(if (pending.hasAudio) "Extracted audio is saved." else "Video is saved; audio will be extracted when you start.")
                             pending.options?.let { Text("Fixed settings: ${it.label}") }
                             pending.sections?.let { Text("${pending.completedSections} of ${it.size} speech sections saved") }
+                            if (pending.options != null) Text(pending.resumeExplanation())
                             if (pending.options == null) Button(onClick = { viewModel.navigate(TranscriptionPage.LANGUAGE) }) { Text("Continue") }
                             else {
-                                Button(onClick = viewModel::start, enabled = models.loaded && (!pending.needsModel || pending.options.model in models.installed)) { Text("Resume transcription") }
+                                Button(onClick = viewModel::start, enabled = models.loaded && (!pending.needsModel || pending.options.model in models.installed)) { Text("Resume") }
                                 if (pending.needsModel && pending.options.model !in models.installed) Text("Download ${pending.options.model.label} to resume with the original settings.")
                             }
                             TextButton(onClick = { confirmDiscard = true }) { Text("Discard unfinished job") }
@@ -224,7 +225,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 } else Button(onClick = { picker.launch(arrayOf("video/*")) }, enabled = state.loaded && models.loaded, modifier = Modifier.fillMaxWidth()) { Text("Import video") }
                 if (transcript != null) OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.RESULT) }) { Text("View saved result") }
                 TextButton(onClick = { modelsReturn = page; viewModel.navigate(TranscriptionPage.MODELS) }) { Text("Manage models") }
-                Text("One unfinished job is kept until success or Discard, including after cancellation. Audio uses about 3.84 MB per minute.", style = MaterialTheme.typography.bodySmall)
+                Text("One saved unfinished job is kept until success or Discard, including after stopping or pausing. Audio uses about 3.84 MB per minute.", style = MaterialTheme.typography.bodySmall)
             }
             if (page == TranscriptionPage.LANGUAGE) {
             Text("Language", style = MaterialTheme.typography.titleMedium)
@@ -273,7 +274,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             if (state.isActive) {
                 Card(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (state.cancelling) "Cancelling…" else state.stage.label(), style = MaterialTheme.typography.titleMedium)
+                        Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(), style = MaterialTheme.typography.titleMedium)
                         val percent = state.percent
                         if (percent == null || state.cancelling) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else {
@@ -282,7 +283,8 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                         }
                         state.activeOptions?.let { Text("Active settings: ${it.label}") }
                         Text(if (state.activeOptions == null) "Importing video. Keep this app open until the copy is saved." else "Processing continues with the screen locked. You can leave this app.")
-                        OutlinedButton(onClick = viewModel::cancel, enabled = !state.cancelling) { Text("Cancel") }
+                        Text(state.stopExplanation(), style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = viewModel::stop, enabled = !state.cancelling) { Text(state.stopActionLabel()) }
                     }
                 }
             }

@@ -109,7 +109,7 @@ internal class TranscriptionRepository(private val app: Application) {
     }
 
     suspend fun discardJob() = storage.withLock {
-        check(!state.value.isActive) { "Cancel processing before discarding this job." }
+        check(!state.value.isActive) { "Stop processing before discarding this job." }
         jobs.discard()
         store.clearActive()
         mutable.update { it.copy(pendingJob = null, retainedBytes = 0, stage = ProcessingStage.IDLE, message = null, activeOptions = null) }
