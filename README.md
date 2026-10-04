@@ -1,21 +1,30 @@
 # Video to text
 
-Android 7.0+ app for offline English, Mandarin, and Cantonese video transcription.
-Import one video through the file picker or Android Share menu. A foreground
-service extracts its first audio track and runs CPU Whisper inference while the
-app is backgrounded or the screen is locked.
+Android 7.0+ app for offline English, Mandarin, and Cantonese transcription from
+audio and video. Import one file through the file picker or Android Share menu.
+A foreground service extracts its first audio track and runs CPU Whisper
+inference while the app is backgrounded or the screen is locked.
 
-Follow **Import video → Select language → Select model → Start transcription →
-Result**. Import and Android Share copy one video into private durable storage;
+Follow **Import audio or video → Select language → Select model → Start transcription →
+Result**. Import and Android Share copy one source file into private durable storage;
 neither starts inference. Keep the app open until the source copy is saved; an
 interrupted import must be repeated. The import page shows filename and duration.
 Cantonese can be chosen before Turbo is installed; its model page offers only
 Turbo, with download access. Model management returns to the same setup choices.
 Settings become immutable when Start is pressed. The processing page shows them.
 
+The picker and Android Share accept audio and video. Import inspects actual tracks
+in the private copy and checks that Android can configure a decoder for the first
+audio track; filenames and Share MIME types do not determine validity. Files with
+no audio track are rejected. WAV and compressed formats such as MP3, M4A and AAC
+use the same streaming decode and mono 16 kHz PCM conversion, subject to device
+codec support. Audio-only sources show **Preparing audio**; videos show
+**Extracting audio**. Full sample validation and silence checks happen at Start.
+Existing video jobs and saved transcripts remain readable.
+
 Processing controls reflect what can be retained: **Cancel import** discards an
-incomplete copy; **Stop for now** during extraction keeps the source video but
-restarts extraction on Resume; **Pause transcription** keeps saved audio and
+incomplete copy; **Stop for now** during extraction keeps the source file but
+restarts extraction on Resume; **Pause transcription** keeps saved PCM audio and
 completed speech sections. Resume repeats the unfinished section, containing at
 most 30 seconds of audio. The processing screen and notification explain this.
 The retained-job card offers **Resume**, shows saved progress and fixed settings,
@@ -142,7 +151,7 @@ service uses `mediaProcessing` on API 35+, `specialUse` on API 34, `dataSync` on
 API 29–33, and an untyped foreground service on API 24–28. Notification denial
 does not prevent transcription.
 
-`VideoAudioDecoder`, `PcmConversion`, and `PcmResampler` stream mono 16 kHz PCM to
+`MediaAudioDecoder`, `PcmConversion`, and `PcmResampler` stream mono 16 kHz PCM to
 disk, retaining audio presentation-time gaps and the first offset. JNI maps PCM;
 Kotlin never buffers the entire audio track. Both guided and Auto inference use
 ordered, disjoint sections of at most 30 seconds. The complete section plan is
@@ -164,15 +173,15 @@ offset. Progress aggregates monotonically across the mapped audio. Native abort
 callbacks remain active during transcription; model loading, language detection,
 and bounded detector passes check cancellation between calls.
 
-Allow storage for the private model files, staged video, about 3.84 MB of PCM per
-minute, and both staged/private copies of downloaded models during installation.
+Allow storage for the private model files, staged source file, about 3.84 MB of
+PCM per minute, and both staged/private copies of downloaded models during installation.
 Target a recent ARM64 phone with at least 6 GB RAM. Larger models increase memory
 and processing cost; speed and accuracy are not guaranteed. Native resources,
 streams and codecs are released on terminal paths. One unfinished job is retained
 outside cache and Android backup, including after cancellation or failure.
 Reopening offers explicit Resume or Discard and never restarts inference automatically.
 A completed extraction is reused; interrupted extraction restarts from the retained
-video. After a successful result commit, or explicit Discard, retained media and
+source file. After a successful result commit, or explicit Discard, retained media and
 section checkpoints are removed. The last successful transcript survives failure,
 cancellation and Discard. Shared exports older than one day are cleaned
 on startup.
@@ -185,10 +194,12 @@ with a cancellation check at the commit boundary.
 
 Emulator verification covers builds for both ABIs, unit tests, lint, native
 fixtures, persistence/exports, download policy and recovery, and atomic model
-installation. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.
+installation. Audio-import regression tests have been compiled but not run;
+audio-only device codec behavior remains unverified. See
+[docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.
 
 Cantonese accuracy beyond the included fixture and larger-model performance on
 physical phones remain unverified. The physical-phone benchmark was not resumed.
-Rapid switching within a phrase, noisy speech, long-video resource use, API 24/34
+Rapid switching within a phrase, noisy speech, long-media resource use, API 24/34
 service behavior, and hardware codec differences require broader device testing
 before release.

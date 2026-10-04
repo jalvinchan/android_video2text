@@ -42,7 +42,7 @@ class TranscriptionService : Service() {
         super.onCreate()
         if (Build.VERSION.SDK_INT >= 26) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL, "Video transcription", NotificationManager.IMPORTANCE_LOW).apply {
+                NotificationChannel(CHANNEL, "Offline transcription", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Progress and pause controls for offline transcription"
                 })
         }
@@ -57,12 +57,12 @@ class TranscriptionService : Service() {
             return START_NOT_STICKY
         }
         if (job != null) {
-            repository.report("A transcription is already running. Stop it before importing another video.")
+            repository.report("A transcription is already running. Stop it before importing another file.")
             return START_NOT_STICKY
         }
         val jobId = intent?.getStringExtra("jobId")
         if (intent?.action != START || jobId.isNullOrBlank()) {
-            repository.report("Import a video and complete setup before starting transcription.")
+            repository.report("Import audio or video and complete setup before starting transcription.")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -75,7 +75,7 @@ class TranscriptionService : Service() {
                 else -> startForeground(NOTIFICATION, notification)
             }
         } catch (_: RuntimeException) {
-            repository.report("Android could not start background processing. Keep the app open and select the video again.")
+            repository.report("Android could not start background processing. Keep the app open and select the file again.")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -124,7 +124,7 @@ class TranscriptionService : Service() {
                 }
             } catch (_: OutOfMemoryError) {
                 withContext(NonCancellable + Dispatchers.IO) {
-                    repository.finish(ProcessingStage.FAILED, "Not enough memory to transcribe this video. Close other apps or try a shorter video.")
+                    repository.finish(ProcessingStage.FAILED, "Not enough memory to transcribe this file. Close other apps or try a shorter file.")
                 }
             } catch (_: LinkageError) {
                 withContext(NonCancellable + Dispatchers.IO) {
@@ -184,7 +184,7 @@ class TranscriptionService : Service() {
         val cancel = PendingIntent.getService(this, 1, Intent(this, TranscriptionService::class.java).setAction(CANCEL), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val state = repository.state.value
         val cancelling = state.cancelling
-        val status = if (cancelling) state.stoppingLabel() else stage.label()
+        val status = if (cancelling) state.stoppingLabel() else stage.label(state.pendingJob)
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_transcription)
             .setContentTitle("Video to text")
@@ -201,13 +201,13 @@ class TranscriptionService : Service() {
 
     private fun failureMessage(error: Exception): String = when (error) {
         is ProcessingException -> error.message!!
-        is SecurityException, is FileNotFoundException -> "The selected video is no longer accessible. Select it again and allow access."
-        is MediaCodec.CodecException -> "This phone cannot decode the video's audio codec. Try a video using AAC audio."
-        is IllegalArgumentException -> error.message?.takeIf { it.endsWith('.') } ?: "The video is damaged or uses an unsupported media format. Try another video."
-        is IOException -> if (error.message?.contains("space", ignoreCase = true) == true) "Not enough free storage. Free some space and select the video again."
+        is SecurityException, is FileNotFoundException -> "The selected file is no longer accessible. Select it again and allow access."
+        is MediaCodec.CodecException -> "This phone cannot decode this file's audio codec. Try an AAC or MP3 audio file."
+        is IllegalArgumentException -> error.message?.takeIf { it.endsWith('.') } ?: "The file is damaged or uses an unsupported media format. Try another file."
+        is IOException -> if (error.message?.contains("space", ignoreCase = true) == true) "Not enough free storage. Free some space and select the file again."
             else error.message?.takeIf { it.startsWith("Offline transcription") || it.startsWith("Unable to load the offline") || it.startsWith("Not enough memory") }
-                ?: "The video could not be read or saved. Check access and free storage, then try again."
-        else -> "The video could not be transcribed. Try another video or restart the app."
+                ?: "The file could not be read or saved. Check access and free storage, then try again."
+        else -> "The file could not be transcribed. Try another file or restart the app."
     }
 
     companion object {

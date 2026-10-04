@@ -2,7 +2,6 @@ package com.example.video2text
 
 import android.content.Context
 import android.content.Intent
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.OpenableColumns
@@ -21,13 +20,14 @@ data class AudioSection(val startSample: Int, val endSample: Int)
 data class TranscriptionJob(
     val id: String,
     val sourceName: String,
-    val videoDurationMs: Long?,
+    val sourceDurationMs: Long?,
     val options: TranscriptionOptions? = null,
     val audioOffsetMs: Long? = null,
     val audioDurationMs: Long? = null,
     val audioBytes: Long? = null,
     val sections: List<AudioSection>? = null,
     val completedSections: Int = 0,
+    val sourceHasVideo: Boolean = true, // Records saved before audio import were video-only.
 ) {
     val hasAudio: Boolean get() = audioBytes != null
     val needsModel: Boolean get() = sections == null || completedSections < sections.size
@@ -37,7 +37,8 @@ data class TranscriptionJob(
 internal class TranscriptionJobStore(root: File) {
     val directory = File(root, "unfinished-transcription")
     private val record = AtomicFile(File(directory, "job.json"))
-    val video = File(directory, "input-video")
+    // Keep the on-disk filename so existing saved jobs remain resumable.
+    val source = File(directory, "input-video")
     val audio = File(directory, "audio.f32")
 
     fun load(completedJobId: String? = null): TranscriptionJob? {
@@ -57,22 +58,26 @@ internal class TranscriptionJobStore(root: File) {
         // The model hash pins the settings to the exact catalog revision used at Start.
         require(options == null || (json.getString("modelSha256") == options.model.sha256 && json.getString("sectionRevision") == "whisper-1.7.6-sections-v1")) { "The saved model revision has changed. Discard this job and import again." }
         var job = TranscriptionJob(json.getString("id"), json.getString("sourceName"),
-            if (json.has("videoDurationMs")) json.getLong("videoDurationMs") else null, options,
+            when {
+                json.has("sourceDurationMs") -> json.getLong("sourceDurationMs")
+                json.has("videoDurationMs") -> json.getLong("videoDurationMs")
+                else -> null
+            }, options,
             if (json.has("audioBytes")) json.getLong("audioOffsetMs") else null,
             if (json.has("audioBytes")) json.getLong("audioDurationMs") else null,
             if (json.has("audioBytes")) json.getLong("audioBytes") else null,
             if (json.has("sections")) json.getJSONArray("sections").let { list -> List(list.length()) { index ->
                 val section = list.getJSONArray(index)
                 AudioSection(section.getInt(0), section.getInt(1))
-            } } else null)
+            } } else null, sourceHasVideo = json.optBoolean("sourceHasVideo", true))
         require(job.id.isNotBlank())
         if (job.hasAudio) {
             require(options != null && job.audioOffsetMs!! >= 0 && job.audioDurationMs!! > 0)
             require(audio.isFile && audio.length() == job.audioBytes && audio.length() > 0 && audio.length() % 4 == 0L) { "The retained audio is incomplete. Discard this job and import again." }
             require(audio.length() / 4 * 1000 / 16000 == job.audioDurationMs)
-            video.delete() // A crash may have occurred after committing audio but before cleanup.
+            source.delete() // A crash may have occurred after committing audio but before cleanup.
         } else {
-            require(video.isFile && video.length() > 0) { "The retained video is unavailable. Discard this job and import again." }
+            require(source.isFile && source.length() > 0) { "The retained source file is unavailable. Discard this job and import again." }
             audio.delete() // Uncommitted extraction must never be resumed.
         }
         job.sections?.let { sections ->
@@ -97,7 +102,8 @@ internal class TranscriptionJobStore(root: File) {
     fun save(job: TranscriptionJob) {
         check(directory.mkdirs() || directory.isDirectory) { "Unable to create job storage." }
         val json = JSONObject().put("version", 1).put("id", job.id).put("sourceName", job.sourceName)
-        job.videoDurationMs?.let { json.put("videoDurationMs", it) }
+        json.put("sourceHasVideo", job.sourceHasVideo)
+        job.sourceDurationMs?.let { json.put("sourceDurationMs", it) }
         job.options?.let { json.put("language", it.language.name).put("model", it.model.name).put("modelSha256", it.model.sha256).put("sectionRevision", "whisper-1.7.6-sections-v1") }
         if (job.hasAudio) json.put("audioOffsetMs", job.audioOffsetMs).put("audioDurationMs", job.audioDurationMs).put("audioBytes", job.audioBytes)
         job.sections?.let { sections ->
@@ -107,17 +113,17 @@ internal class TranscriptionJobStore(root: File) {
     }
 
     fun import(context: Context, uri: Uri, cancellation: ProcessingCancellation, progress: (Int?) -> Unit): TranscriptionJob {
-        require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "Select a video using the file picker or Android Share menu." }
-        check(load() == null) { "Discard the unfinished job before importing another video." }
+        require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "Select audio or video using the file picker or Android Share menu." }
+        check(load() == null) { "Discard the unfinished job before importing another file." }
         check(directory.mkdirs() || directory.isDirectory)
-        var name = "video"
+        var name = "media"
         var size: Long? = null
         val partial = File(directory, "input-video.part")
         try {
             context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex >= 0 && !cursor.isNull(nameIndex)) name = cursor.getString(nameIndex).replace(Regex("[\\r\\n\\t]"), " ").take(200).ifBlank { "video" }
+                    if (nameIndex >= 0 && !cursor.isNull(nameIndex)) name = cursor.getString(nameIndex).replace(Regex("[\\r\\n\\t]"), " ").take(200).ifBlank { "media" }
                     val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
                     if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex).takeIf { it > 0 }
                 }
@@ -146,18 +152,13 @@ internal class TranscriptionJobStore(root: File) {
                             file.fd.sync()
                         }
                     }
-                } ?: throw ProcessingException("The selected video is no longer accessible. Select it again.")
+                } ?: throw ProcessingException("The selected file is no longer accessible. Select it again.")
             }
             require(partial.length() > 0) { "The selected file is empty." }
-            val retriever = MediaMetadataRetriever()
-            val duration = try {
-                retriever.setDataSource(partial.absolutePath)
-                require(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") { "Choose a video file containing an audio track." }
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.takeIf { it > 0 }
-            } finally { retriever.release() }
+            val media = MediaAudioDecoder().inspect(partial, cancellation::check)
             cancellation.check()
-            check(partial.renameTo(video)) { "The imported video could not be saved." }
-            val job = TranscriptionJob(UUID.randomUUID().toString(), name, duration)
+            check(partial.renameTo(source)) { "The imported file could not be saved." }
+            val job = TranscriptionJob(UUID.randomUUID().toString(), name, media.durationMs, sourceHasVideo = media.hasVideo)
             cancellation.check()
             save(job)
             return job
@@ -166,7 +167,7 @@ internal class TranscriptionJobStore(root: File) {
             throw error
         } finally {
             try { context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            catch (_: SecurityException) { /* Shared videos normally have a temporary grant. */ }
+            catch (_: SecurityException) { /* Shared files normally have a temporary grant. */ }
         }
     }
 
@@ -174,13 +175,13 @@ internal class TranscriptionJobStore(root: File) {
         if (job.hasAudio) return job
         val partial = File(directory, "audio.part")
         try {
-            val decoded = VideoAudioDecoder().decode(video, partial, cancellation::check, progress)
+            val decoded = MediaAudioDecoder().decode(source, partial, cancellation::check, progress)
             FileOutputStream(partial, true).use { it.fd.sync() }
             cancellation.check()
             check(partial.renameTo(audio)) { "The extracted audio could not be saved." }
             val ready = job.copy(audioOffsetMs = decoded.offsetMs, audioDurationMs = decoded.durationMs, audioBytes = audio.length())
             save(ready) // Commit metadata only after valid audio is durable. Keep source until this succeeds.
-            video.delete()
+            source.delete()
             return ready
         } finally { partial.delete() }
     }

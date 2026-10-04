@@ -27,11 +27,11 @@ internal class PcmConversion(
         if (!buffer.hasRemaining()) return
         if (firstPresentationTimeUs == null) firstPresentationTimeUs = presentationTimeUs
         val expected = ((presentationTimeUs - firstPresentationTimeUs!!) * (rate / 1_000_000.0)).roundToLong()
-        require(expected >= 0) { "The video contains invalid audio timestamps." }
+        require(expected >= 0) { "The file contains invalid audio timestamps." }
         val difference = expected - frames
         if (difference > 2) {
             // Prevent hostile timestamps from creating a practically unbounded output file.
-            require(expected * 16_000.0 / rate < Int.MAX_VALUE) { "This video is too long to transcribe." }
+            require(expected * 16_000.0 / rate < Int.MAX_VALUE) { "This file is too long to transcribe." }
             repeatFrames(difference) { resampler.push(0f) }
         } else if (difference < -2) {
             val skip = minOf(-difference, (buffer.remaining() / frameBytes).toLong()).toInt()

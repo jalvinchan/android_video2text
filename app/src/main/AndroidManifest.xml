@@ -35,12 +35,13 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
             </intent-filter>
         </activity>
         <service android:name=".TranscriptionService" android:exported="false"
             android:foregroundServiceType="dataSync|specialUse|mediaProcessing">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Offline CPU transcription of a user-selected video while extracting and processing audio" />
+                android:value="Offline CPU transcription of a user-selected audio or video file while extracting and processing audio" />
         </service>
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.exports" android:exported="false" android:grantUriPermissions="true">

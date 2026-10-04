@@ -7,7 +7,7 @@ import kotlin.math.floor
 import kotlin.math.roundToLong
 import kotlin.math.sin
 
-/** Streaming windowed-sinc conversion. Memory is constant, independent of video duration. */
+/** Streaming windowed-sinc conversion. Memory is constant, independent of source duration. */
 internal class PcmResampler(private val inputRate: Int, private val emit: (Float) -> Unit) {
     init { require(inputRate in 8_000..192_000) { "Unsupported audio sample rate: $inputRate Hz." } }
 

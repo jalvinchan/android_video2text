@@ -13,30 +13,62 @@ import java.nio.ByteOrder
 import kotlin.math.sqrt
 
 internal data class DecodedAudio(val file: File, val offsetMs: Long, val durationMs: Long)
+internal data class SourceMedia(val hasVideo: Boolean, val durationMs: Long?)
 
-internal class VideoAudioDecoder {
-    fun decode(video: File, destination: File, checkCancelled: () -> Unit, progress: (Int?) -> Unit): DecodedAudio {
+internal class MediaAudioDecoder {
+    /** Inspect copied bytes, never the provider's MIME type or filename. */
+    fun inspect(source: File, checkCancelled: () -> Unit): SourceMedia {
+        val extractor = MediaExtractor()
+        try {
+            checkCancelled()
+            try { extractor.setDataSource(source.absolutePath) }
+            catch (_: java.io.IOException) { throw ProcessingException("The file is damaged or uses an unsupported media format. Try another file.") }
+            val track = audioTrack(extractor)
+            // Check platform codec support before setup; full sample validation happens at Start.
+            openDecoder(extractor.getTrackFormat(track)).release()
+            checkCancelled()
+            val formats = (0 until extractor.trackCount).map(extractor::getTrackFormat)
+            return SourceMedia(
+                hasVideo = formats.any { it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true },
+                durationMs = formats.mapNotNull { format ->
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION).takeIf { it > 0 } else null
+                }.maxOrNull()?.div(1_000),
+            )
+        } finally { extractor.release() }
+    }
+
+    private fun audioTrack(extractor: MediaExtractor): Int = requireNotNull((0 until extractor.trackCount).firstOrNull {
+        extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+    }) { "This file has no audio track. Choose audio or video with audible speech." }
+
+    private fun openDecoder(format: MediaFormat): MediaCodec {
+        var codec: MediaCodec? = null
+        try {
+            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+            val decoder = MediaCodec.createDecoderByType(requireNotNull(format.getString(MediaFormat.KEY_MIME)))
+            codec = decoder
+            decoder.configure(format, null, null, 0)
+            decoder.start()
+            return decoder
+        } catch (error: Throwable) {
+            runCatching { codec?.release() }
+            if (error is Exception) throw ProcessingException("This phone cannot decode this file's audio codec. Try an AAC or MP3 audio file.")
+            throw error
+        }
+    }
+
+    fun decode(source: File, destination: File, checkCancelled: () -> Unit, progress: (Int?) -> Unit): DecodedAudio {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            extractor.setDataSource(video.absolutePath)
-            var audioTrack = -1
-            var hasVideo = false
-            for (track in 0 until extractor.trackCount) {
-                val mime = extractor.getTrackFormat(track).getString(MediaFormat.KEY_MIME).orEmpty()
-                if (mime.startsWith("video/")) hasVideo = true
-                if (audioTrack == -1 && mime.startsWith("audio/")) audioTrack = track
-            }
-            require(hasVideo) { "Choose a video file containing an audio track." }
-            require(audioTrack >= 0) { "This video has no audio track." }
+            checkCancelled()
+            extractor.setDataSource(source.absolutePath)
+            val audioTrack = audioTrack(extractor)
             extractor.selectTrack(audioTrack)
             val inputFormat = extractor.getTrackFormat(audioTrack)
             val durationUs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) inputFormat.getLong(MediaFormat.KEY_DURATION) else 0L
-            inputFormat.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
-            val decoder = MediaCodec.createDecoderByType(inputFormat.getString(MediaFormat.KEY_MIME)!!)
+            val decoder = openDecoder(inputFormat)
             codec = decoder
-            decoder.configure(inputFormat, null, null, 0)
-            decoder.start()
             val info = MediaCodec.BufferInfo()
             var inputEnded = false
             var outputEnded = false
@@ -51,7 +83,7 @@ internal class VideoAudioDecoder {
             BufferedOutputStream(FileOutputStream(destination), 64 * 1_024).use { output ->
                 fun flushPcm() {
                     if (destination.parentFile!!.usableSpace < bytes.position() + 1024L * 1024) {
-                        throw ProcessingException("Not enough free storage. Free some space and select the video again.")
+                        throw ProcessingException("Not enough free storage. Free some space and select the file again.")
                     }
                     output.write(bytes.array(), 0, bytes.position())
                     bytes.clear()
@@ -68,7 +100,7 @@ internal class VideoAudioDecoder {
                                 inputEnded = true
                             } else {
                                 require(extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) {
-                                    "Protected video audio cannot be transcribed."
+                                    "Protected audio cannot be transcribed."
                                 }
                                 decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, 0)
                                 extractor.advance()
@@ -92,14 +124,14 @@ internal class VideoAudioDecoder {
                             }
                             if (conversion != null) {
                                 require(rate == outputRate && channels == outputChannels && encoding == outputEncoding) {
-                                    "The audio format changes inside this video. Choose a video with a single audio format."
+                                    "The audio format changes inside this file. Choose a video with a single audio format."
                                 }
                             } else {
                                 outputRate = rate
                                 outputChannels = channels
                                 outputEncoding = encoding
                                 conversion = PcmConversion(rate, channels, encoding, checkCancelled) { sample ->
-                                    require(samples < Int.MAX_VALUE) { "This video is too long to transcribe." }
+                                    require(samples < Int.MAX_VALUE) { "This file is too long to transcribe." }
                                     bytes.putFloat(sample)
                                     samples++
                                     energy += sample.toDouble() * sample
@@ -125,15 +157,15 @@ internal class VideoAudioDecoder {
                         }
                     }
                     if (SystemClock.elapsedRealtime() - lastActivity > 30_000) {
-                        throw ProcessingException("The audio decoder stopped responding. Try another video or codec.")
+                        throw ProcessingException("The audio decoder stopped responding. Try another file or codec.")
                     }
                 }
                 checkCancelled()
                 conversion?.finish()
                 flushPcm()
             }
-            require(samples > 0) { "This video contains no decodable audio." }
-            require(sqrt(energy / samples) >= 0.0001) { "The audio is silent. Select a video with audible speech." }
+            require(samples > 0) { "This file contains no decodable audio." }
+            require(sqrt(energy / samples) >= 0.0001) { "The audio is silent. Select a file with audible speech." }
             progress(100)
             return DecodedAudio(destination, (conversion?.firstPresentationTimeUs ?: 0L) / 1_000, samples * 1_000 / 16_000)
         } finally {

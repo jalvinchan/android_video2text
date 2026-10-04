@@ -67,20 +67,20 @@ class TranscriptionViewModel(application: Application, private val savedState: S
         }
     }
 
-    fun importVideo(uri: Uri) {
-        if (importCancellation != null) { report("A video import is already running."); return }
+    fun importMedia(uri: Uri) {
+        if (importCancellation != null) { report("A media import is already running."); return }
         val token = ProcessingCancellation()
         importCancellation = token
         viewModelScope.launch {
             try {
                 repository.ready.await()
                 app.models.ready.await()
-                withContext(Dispatchers.IO) { repository.importVideo(uri, token) }
+                withContext(Dispatchers.IO) { repository.importMedia(uri, token) }
                 navigate(TranscriptionPage.LANGUAGE)
             } catch (error: Exception) {
-                if (state.value.isActive && state.value.activeOptions != null) report("A transcription is already running. Stop it before importing another video.")
-                else if (state.value.isActive) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.finish(if (token.isCancelled()) ProcessingStage.CANCELLED else ProcessingStage.FAILED, if (token.isCancelled()) "Import cancelled. Select the video again." else error.message ?: "The video could not be imported. Check access and free storage.") }
-                else report(error.message ?: "The video could not be imported. Check access and free storage.")
+                if (state.value.isActive && state.value.activeOptions != null) report("A transcription is already running. Stop it before importing another file.")
+                else if (state.value.isActive) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.finish(if (token.isCancelled()) ProcessingStage.CANCELLED else ProcessingStage.FAILED, if (token.isCancelled()) "Import cancelled. Select the file again." else error.message ?: "The file could not be imported. Check access and free storage.") }
+                else report(error.message ?: "The file could not be imported. Check access and free storage.")
             } finally { importCancellation = null }
         }
     }

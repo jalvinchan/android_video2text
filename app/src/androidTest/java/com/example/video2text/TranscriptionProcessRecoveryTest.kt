@@ -29,7 +29,7 @@ class TranscriptionProcessRecoveryTest {
                 repository.complete(previous, ProcessingCancellation())
                 val source = File(app.cacheDir, "exports/process-recovery/boundary.mp4").apply { parentFile!!.mkdirs() }
                 instrumentation.context.assets.open("boundary.mp4").use { input -> source.outputStream().use { input.copyTo(it) } }
-                repository.importVideo(FileProvider.getUriForFile(app, "${app.packageName}.exports", source), ProcessingCancellation())
+                repository.importMedia(FileProvider.getUriForFile(app, "${app.packageName}.exports", source), ProcessingCancellation())
                 source.parentFile!!.deleteRecursively()
                 val job = repository.startJob(repository.state.value.pendingJob!!.id, TranscriptionOptions(SpeechLanguage.MANDARIN))
                 if (phase == "committed") {

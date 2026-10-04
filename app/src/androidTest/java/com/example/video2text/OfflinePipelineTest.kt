@@ -49,12 +49,12 @@ class OfflinePipelineTest {
         val directory = File(app.cacheDir, "decoder-test-${UUID.randomUUID()}").apply { mkdirs() }
         for ((name, message) in listOf("no-audio.mp4" to "no audio track", "silent.mp4" to "silent")) {
             val video = fixture(name)
-            try { VideoAudioDecoder().decode(video, File(directory, "pcm"), {}, {}); fail(name) }
+            try { MediaAudioDecoder().decode(video, File(directory, "pcm"), {}, {}); fail(name) }
             catch (error: IllegalArgumentException) { assertTrue(error.message, error.message!!.contains(message)) }
             video.parentFile!!.deleteRecursively()
         }
         val corrupt = File(directory, "corrupt.mp4").apply { writeText("not a video") }
-        try { VideoAudioDecoder().decode(corrupt, File(directory, "pcm"), {}, {}); fail("Corrupt video accepted") }
+        try { MediaAudioDecoder().decode(corrupt, File(directory, "pcm"), {}, {}); fail("Corrupt video accepted") }
         catch (_: Exception) { }
         directory.deleteRecursively()
     }
@@ -62,7 +62,7 @@ class OfflinePipelineTest {
     @Test fun decoderKeepsDelayedAudioRelativeToTheVideo() {
         val video = fixture("offset-speech.mp4")
         val directory = File(app.cacheDir, "offset-test-${UUID.randomUUID()}").apply { mkdirs() }
-        val audio = VideoAudioDecoder().decode(video, File(directory, "pcm"), {}, {})
+        val audio = MediaAudioDecoder().decode(video, File(directory, "pcm"), {}, {})
         assertTrue("offset=${audio.offsetMs}", audio.offsetMs in 1_900..2_100)
         assertTrue(audio.durationMs in 10_000..12_000)
         assertEquals(0L, audio.file.length() % 4)

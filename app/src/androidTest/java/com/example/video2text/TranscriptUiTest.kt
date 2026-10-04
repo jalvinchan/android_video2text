@@ -70,10 +70,10 @@ class TranscriptUiTest {
         compose.onNodeWithText("Delete").performClick()
         compose.waitUntil(5_000) { (compose.activity.application as TranscriptionApplication).repository.state.value.transcript == null }
         compose.onNodeWithText("Back").performClick()
-        compose.onAllNodesWithText("Import video")[0].assertExists()
+        compose.onAllNodesWithText("Import audio or video")[0].assertExists()
     }
     @Test fun downloadDialogRequiresAnExplicitMobileChoiceForEachRequest() {
-        compose.onNodeWithText("Transcribe another video").performScrollTo().performClick()
+        compose.onNodeWithText("Transcribe another file").performScrollTo().performClick()
         compose.onNodeWithText("Manage models").performScrollTo().performClick()
         compose.onNodeWithText("Download Small").performScrollTo().performClick()
         compose.onNodeWithText("Download Small?").assertExists()
@@ -90,7 +90,7 @@ class TranscriptUiTest {
         val file = java.io.File(app.cacheDir, "exports/ui-fixture/speech.mp4").apply { parentFile!!.mkdirs() }
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets.open("speech.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
         val uri = androidx.core.content.FileProvider.getUriForFile(app, "${app.packageName}.exports", file)
-        compose.runOnUiThread { androidx.lifecycle.ViewModelProvider(compose.activity)[TranscriptionViewModel::class.java].importVideo(uri) }
+        compose.runOnUiThread { androidx.lifecycle.ViewModelProvider(compose.activity)[TranscriptionViewModel::class.java].importMedia(uri) }
         compose.waitUntil(10000) { app.repository.state.value.pendingJob != null && !app.repository.state.value.isActive }
         compose.onNodeWithText("Cantonese").assertIsEnabled().performScrollTo().performClick()
         compose.onNodeWithText("Continue to models").performScrollTo().performClick()

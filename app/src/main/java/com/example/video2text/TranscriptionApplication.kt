@@ -55,16 +55,16 @@ internal class TranscriptionRepository(private val app: Application) {
         scope.launch {
             var message: String? = null
             val previous = try { store.load() } catch (_: Exception) {
-                message = "The saved transcript could not be opened. You can import the video again."
+                message = "The saved transcript could not be opened. You can import the file again."
                 null
             }
             var pending: TranscriptionJob? = null
             try {
                 pending = jobs.load(previous?.jobId)
                 if (pending != null) {
-                    message = if (pending.options == null) "Your imported video is ready. Continue setup or discard it."
+                    message = if (pending.options == null) "Your imported file is ready. Continue setup or discard it."
                         else "An unfinished transcription is saved. Resume or discard it. Your last successful result is unchanged."
-                } else if (store.wasInterrupted() && previous?.jobId == null) message = "The import was interrupted. Select the video again. Your last saved result is unchanged."
+                } else if (store.wasInterrupted() && previous?.jobId == null) message = "The import was interrupted. Select the file again. Your last saved result is unchanged."
             } catch (_: Exception) {
                 message = "The unfinished job could not be opened. Discard retained media before importing again. Your last saved result is unchanged."
             }
@@ -81,8 +81,8 @@ internal class TranscriptionRepository(private val app: Application) {
         }
     }
 
-    suspend fun importVideo(uri: android.net.Uri, token: ProcessingCancellation) = storage.withLock {
-        check(!state.value.isActive && state.value.pendingJob == null && state.value.retainedBytes == 0L) { "Discard the unfinished job before importing another video." }
+    suspend fun importMedia(uri: android.net.Uri, token: ProcessingCancellation) = storage.withLock {
+        check(!state.value.isActive && state.value.pendingJob == null && state.value.retainedBytes == 0L) { "Discard the unfinished job before importing another file." }
         begin()
         store.markActive()
         val pending = jobs.import(app, uri, token) { progress(ProcessingStage.PREPARING, it) }
@@ -92,7 +92,7 @@ internal class TranscriptionRepository(private val app: Application) {
 
     suspend fun startJob(id: String, options: TranscriptionOptions?): TranscriptionJob = storage.withLock {
         check(!state.value.isActive) { "A transcription is already running." }
-        val pending = jobs.load() ?: throw ProcessingException("Import a video first.")
+        val pending = jobs.load() ?: throw ProcessingException("Import an audio or video file first.")
         require(pending.id == id) { "The selected job has changed. Reopen it and try again." }
         val fixed = pending.options ?: requireNotNull(options).also { it.validate() }
         require(options == null || pending.options == null || options == pending.options) { "Resume uses the original settings. Discard this job to change them." }

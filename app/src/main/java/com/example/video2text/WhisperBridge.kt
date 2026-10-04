@@ -16,7 +16,7 @@ internal class ProcessingCancellation {
             if (committed) return false
             cancelled.set(true)
         }
-        // Closing the provider stream also interrupts a blocked read during video staging.
+        // Closing the provider stream also interrupts a blocked read during media staging.
         resourceCancellation.getAndSet(null)?.let { runCatching(it) }
         return true
     }

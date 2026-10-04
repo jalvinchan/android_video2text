@@ -72,7 +72,7 @@ class MultilingualPipelineTest {
         val prepared = app.models.acquire(TranscriptionOptions(), ProcessingCancellation()) {}
         try {
             val video = fixture(name, directory)
-            val audio = VideoAudioDecoder().decode(video, File(directory, "pcm.f32"), {}, {})
+            val audio = MediaAudioDecoder().decode(video, File(directory, "pcm.f32"), {}, {})
             val segments = mutableListOf<TranscriptSegment>()
             WhisperBridge.transcribe(modelFile.absolutePath, prepared.vad.absolutePath, audio.file.absolutePath, language.code, model.name, audio.offsetMs, maxOf(1, Runtime.getRuntime().availableProcessors() - 1),
                 object : WhisperCallbacks {

@@ -48,7 +48,7 @@ class TranscriptionRecoveryTest {
                 assertTrue(reopened.hasAudio)
                 assertEquals(1, reopened.completedSections)
                 assertTrue(reopened.sections!!.size > 1)
-                assertFalse(reopenedStore.video.exists())
+                assertFalse(reopenedStore.source.exists())
                 val pcmModified = reopenedStore.audio.lastModified()
                 val originalSection = reopenedStore.readSection(reopened, 0)
                 val checkpoint = File(reopenedStore.directory, "section-0.json").readBytes()
@@ -79,7 +79,7 @@ class TranscriptionRecoveryTest {
             File(store.directory, "audio.part").writeText("unfinished extraction")
             val reopened = TranscriptionJobStore(root).load()!!
             assertFalse(reopened.hasAudio)
-            assertTrue(store.video.exists())
+            assertTrue(store.source.exists())
             assertFalse(File(store.directory, "audio.part").exists())
             val ready = store.extract(reopened, ProcessingCancellation()) {}
             assertTrue(ready.audioOffsetMs!! in 1900..2100)
@@ -121,7 +121,7 @@ class TranscriptionRecoveryTest {
         try {
             instrumentation.context.assets.open("speech.mp4").use { input -> source.outputStream().use { input.copyTo(it) } }
             val uri = FileProvider.getUriForFile(app, "${app.packageName}.exports", source)
-            withContext(Dispatchers.IO) { repository.importVideo(uri, ProcessingCancellation()) }
+            withContext(Dispatchers.IO) { repository.importMedia(uri, ProcessingCancellation()) }
             val imported = repository.state.value.pendingJob!!
             assertFalse(repository.state.value.isActive)
             assertNull(imported.options)
@@ -132,7 +132,7 @@ class TranscriptionRecoveryTest {
             assertEquals(previous, repository.state.value.transcript)
             withContext(Dispatchers.IO) { repository.discardJob() }
             assertEquals(previous, TranscriptStore(app.noBackupFilesDir).load())
-            withContext(Dispatchers.IO) { repository.importVideo(uri, ProcessingCancellation()) }
+            withContext(Dispatchers.IO) { repository.importMedia(uri, ProcessingCancellation()) }
             val next = repository.state.value.pendingJob!!
             val result = Transcript(next.sourceName, listOf(TranscriptSegment(0, 1000, "New result")), next.id)
             withContext(Dispatchers.IO) { repository.complete(result, ProcessingCancellation()) }

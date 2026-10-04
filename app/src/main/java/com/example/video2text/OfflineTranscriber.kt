@@ -7,7 +7,7 @@ import java.io.File
 internal class OfflineTranscriber(private val context: Context) {
     /** Fixture entry point; production keeps the job store across terminal paths. */
     suspend fun run(uri: Uri, directory: File, cancellation: ProcessingCancellation, options: TranscriptionOptions = TranscriptionOptions(), progress: (ProcessingStage, Int?) -> Unit): Transcript {
-        require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "Select a video using the file picker or Android Share menu." }
+        require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "Select audio or video using the file picker or Android Share menu." }
         options.validate()
         val store = TranscriptionJobStore(directory)
         try {
@@ -65,7 +65,7 @@ internal class OfflineTranscriber(private val context: Context) {
             } finally { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { models.release() } }
         }
         cancellation.check()
-        require(allSegments.isNotEmpty()) { "No speech was detected. Try a video with clearer speech." }
+        require(allSegments.isNotEmpty()) { "No speech was detected. Try a file with clearer speech." }
         return Transcript(ready.sourceName, allSegments.toList(), ready.id)
     }
 }

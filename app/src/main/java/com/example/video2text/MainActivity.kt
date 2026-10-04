@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
         viewModel = ViewModelProvider(this)[TranscriptionViewModel::class.java]
         enableEdgeToEdge()
         setContent { Video2textTheme { TranscriptionScreen(viewModel) } }
-        if (savedInstanceState == null) receiveSharedVideo(intent)
+        if (savedInstanceState == null) receiveSharedMedia(intent)
     }
 
     override fun onResume() {
@@ -86,22 +86,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        receiveSharedVideo(intent)
+        receiveSharedMedia(intent)
     }
 
-    private fun receiveSharedVideo(intent: Intent) {
+    private fun receiveSharedMedia(intent: Intent) {
         if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return
         try {
             if (intent.action == Intent.ACTION_SEND_MULTIPLE || (intent.clipData?.itemCount ?: 0) > 1) {
-                viewModel.report("Share one video at a time.")
+                viewModel.report("Share one audio or video file at a time.")
                 return
             }
             val uri = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
                 else @Suppress("DEPRECATION") (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
-            if (intent.type?.startsWith("video/") != true || uri == null) viewModel.report("Share a single video file to transcribe.")
-            else viewModel.importVideo(uri)
+            if (uri == null) viewModel.report("Share a single audio or video file to transcribe.")
+            else viewModel.importMedia(uri)
         } catch (_: RuntimeException) {
-            viewModel.report("This shared video could not be opened. Try importing it with the file picker.")
+            viewModel.report("This shared file could not be opened. Try importing it with the file picker.")
         } finally {
             // Consuming a share once avoids a second transcription on activity recreation.
             // Clear extras without forcing a second unparcel of untrusted input. Retain the
@@ -159,7 +159,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
         if (uri != null) {
             try { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             catch (_: SecurityException) { /* Providers may offer a temporary grant only. */ }
-            viewModel.importVideo(uri)
+            viewModel.importMedia(uri)
         }
     }
     val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), viewModel::save)
@@ -189,7 +189,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(pageScroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Video to text", style = MaterialTheme.typography.headlineMedium)
             Text(when (page) {
-                TranscriptionPage.IMPORT -> "Import video"
+                TranscriptionPage.IMPORT -> "Import audio or video"
                 TranscriptionPage.LANGUAGE -> "Select language"
                 TranscriptionPage.MODEL -> "Select model"
                 TranscriptionPage.PROCESSING -> "Processing"
@@ -199,15 +199,15 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             if (page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING) TextButton(onClick = back) { Text("Back") }
             state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
             if (page == TranscriptionPage.IMPORT) {
-                Text("Import a video, choose its language and model, then start offline transcription.")
+                Text("Import audio or video, choose its language and model, then start offline transcription.")
                 val pending = state.pendingJob
                 if (pending != null) {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(pending.sourceName, style = MaterialTheme.typography.titleMedium)
-                            pending.videoDurationMs?.let { Text("Duration: ${it / 1000} seconds") }
+                            pending.sourceDurationMs?.let { Text("Duration: ${it / 1000} seconds") }
                             Text("Retained media: ${state.retainedBytes / (1024 * 1024)} MiB")
-                            Text(if (pending.hasAudio) "Extracted audio is saved." else "Video is saved; audio will be extracted when you start.")
+                            Text(if (pending.hasAudio) "Extracted audio is saved." else if (pending.sourceHasVideo) "Video is saved; audio will be extracted when you start." else "Audio source is saved; it will be prepared when you start.")
                             pending.options?.let { Text("Fixed settings: ${it.label}") }
                             pending.sections?.let { Text("${pending.completedSections} of ${it.size} speech sections saved") }
                             if (pending.options != null) Text(pending.resumeExplanation())
@@ -220,9 +220,9 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                         }
                     }
                 } else if (state.retainedBytes > 0) {
-                    Text("Retained media could not be opened. Discard it to import another video.")
+                    Text("Retained media could not be opened. Discard it to import another file.")
                     TextButton(onClick = { confirmDiscard = true }) { Text("Discard unfinished job") }
-                } else Button(onClick = { picker.launch(arrayOf("video/*")) }, enabled = state.loaded && models.loaded, modifier = Modifier.fillMaxWidth()) { Text("Import video") }
+                } else Button(onClick = { picker.launch(arrayOf("audio/*", "video/*")) }, enabled = state.loaded && models.loaded, modifier = Modifier.fillMaxWidth()) { Text("Import audio or video") }
                 if (transcript != null) OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.RESULT) }) { Text("View saved result") }
                 TextButton(onClick = { modelsReturn = page; viewModel.navigate(TranscriptionPage.MODELS) }) { Text("Manage models") }
                 Text("One saved unfinished job is kept until success or Discard, including after stopping or pausing. Audio uses about 3.84 MB per minute.", style = MaterialTheme.typography.bodySmall)
@@ -274,7 +274,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             if (state.isActive) {
                 Card(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(), style = MaterialTheme.typography.titleMedium)
+                        Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(state.pendingJob), style = MaterialTheme.typography.titleMedium)
                         val percent = state.percent
                         if (percent == null || state.cancelling) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else {
@@ -282,7 +282,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                             Text("$percent%")
                         }
                         state.activeOptions?.let { Text("Active settings: ${it.label}") }
-                        Text(if (state.activeOptions == null) "Importing video. Keep this app open until the copy is saved." else "Processing continues with the screen locked. You can leave this app.")
+                        Text(if (state.activeOptions == null) "Importing media. Keep this app open until the copy is saved." else "Processing continues with the screen locked. You can leave this app.")
                         Text(state.stopExplanation(), style = MaterialTheme.typography.bodySmall)
                         OutlinedButton(onClick = viewModel::stop, enabled = !state.cancelling) { Text(state.stopActionLabel()) }
                     }
@@ -306,7 +306,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 if (search.isNotEmpty()) Text("${matches.size} matches. Exports always contain the full transcript.", style = MaterialTheme.typography.bodySmall)
                 SelectionContainer { Text(displayed, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.fillMaxWidth()) }
                 TextButton(onClick = { confirmDelete = true }, enabled = !state.isActive) { Text("Delete transcript") }
-                Button(onClick = { viewModel.navigate(TranscriptionPage.IMPORT) }) { Text("Transcribe another video") }
+                Button(onClick = { viewModel.navigate(TranscriptionPage.IMPORT) }) { Text("Transcribe another file") }
             }
             models.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
             if (page == TranscriptionPage.MODELS) {
@@ -345,7 +345,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
         }
     }
     if (confirmDiscard) AlertDialog(onDismissRequest = { confirmDiscard = false }, title = { Text("Discard unfinished job?") },
-        text = { Text("This deletes retained video, audio and section checkpoints. Your last successful transcript is kept.") },
+        text = { Text("This deletes retained source file, audio and section checkpoints. Your last successful transcript is kept.") },
         confirmButton = { TextButton(onClick = { confirmDiscard = false; viewModel.discardJob() }) { Text("Discard") } },
         dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Cancel") } })
     downloadModel?.let { model ->
