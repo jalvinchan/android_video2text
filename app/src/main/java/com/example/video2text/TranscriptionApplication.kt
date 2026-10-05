@@ -18,6 +18,7 @@ enum class ProcessingStage { IDLE, PREPARING, EXTRACTING, TRANSCRIBING, COMPLETE
 data class TranscriptionState(
     val loaded: Boolean = false,
     val transcript: Transcript? = null,
+    val history: List<SavedTranscript> = emptyList(),
     val stage: ProcessingStage = ProcessingStage.IDLE,
     val percent: Int? = null,
     val cancelling: Boolean = false,
@@ -54,17 +55,21 @@ internal class TranscriptionRepository(private val app: Application) {
     init {
         scope.launch {
             var message: String? = null
-            val previous = try { store.load() } catch (_: Exception) {
-                message = "The saved transcript could not be opened. You can import the file again."
-                null
+            var historyOpened = true
+            val history = try { store.loadHistory() } catch (_: Exception) {
+                historyOpened = false
+                message = "Transcript history could not be opened. Saved records have been kept. Check storage and reopen the app."
+                emptyList()
             }
+            val previous = history.firstOrNull()?.transcript
             var pending: TranscriptionJob? = null
             try {
-                pending = jobs.load(previous?.jobId)
+                // Without completed IDs, an old finished job cannot safely be offered again.
+                if (historyOpened) pending = jobs.loadExcludingCompleted(history.mapNotNull { it.transcript.jobId }.toSet())
                 if (pending != null) {
                     message = if (pending.options == null) "Your imported file is ready. Continue setup or discard it."
                         else "An unfinished transcription is saved. Resume or discard it. Your last successful result is unchanged."
-                } else if (store.wasInterrupted() && previous?.jobId == null) message = "The import was interrupted. Select the file again. Your last saved result is unchanged."
+                } else if (historyOpened && store.wasInterrupted() && previous?.jobId == null) message = "The import was interrupted. Select the file again. Your last saved result is unchanged."
             } catch (_: Exception) {
                 message = "The unfinished job could not be opened. Discard retained media before importing again. Your last saved result is unchanged."
             }
@@ -76,7 +81,7 @@ internal class TranscriptionRepository(private val app: Application) {
                 catch (_: SecurityException) { /* A provider may have already revoked its grant. */ }
             }
             store.clearActive()
-            mutable.value = TranscriptionState(loaded = true, transcript = previous, pendingJob = pending, retainedBytes = jobs.storageBytes(), message = message)
+            mutable.value = TranscriptionState(loaded = true, transcript = previous, history = history, pendingJob = pending, retainedBytes = jobs.storageBytes(), message = message)
             ready.complete(Unit)
         }
     }
@@ -121,13 +126,13 @@ internal class TranscriptionRepository(private val app: Application) {
     }
     fun cancelling() { mutable.update { it.copy(cancelling = true) } }
     suspend fun complete(transcript: Transcript, cancellation: ProcessingCancellation) = storage.withLock {
-        store.save(transcript, cancellation)
+        val history = store.save(transcript, cancellation)
         store.clearActive()
         if (transcript.jobId != null && transcript.jobId == state.value.pendingJob?.id) {
             // Cleanup failure cannot turn a successfully committed transcript into a failed job.
             runCatching { jobs.discard() }
         }
-        mutable.update { it.copy(pendingJob = null, retainedBytes = jobs.storageBytes(), transcript = transcript, stage = ProcessingStage.COMPLETED, percent = 100, cancelling = false, message = null) }
+        mutable.update { it.copy(pendingJob = null, retainedBytes = jobs.storageBytes(), transcript = history.firstOrNull()?.transcript, history = history, stage = ProcessingStage.COMPLETED, percent = 100, cancelling = false, message = null) }
     }
     suspend fun finish(stage: ProcessingStage, message: String?) = storage.withLock {
         store.clearActive()
@@ -140,9 +145,13 @@ internal class TranscriptionRepository(private val app: Application) {
             mutable.update { it.copy(message = message) }
         }
     }
-    suspend fun delete() = storage.withLock {
-        if (state.value.isActive) return@withLock
-        store.delete()
-        mutable.update { it.copy(transcript = null, stage = ProcessingStage.IDLE, percent = null, message = null) }
+    suspend fun delete(id: String) = storage.withLock {
+        check(!state.value.isActive) { "Pause processing before deleting a transcript." }
+        val entry = state.value.history.firstOrNull { it.id == id }
+            ?: error("This saved transcript is no longer available.")
+        // Keep the completion marker until any matching finished job has been removed.
+        if (entry.transcript.jobId != null && jobs.storageBytes() > 0) jobs.load(entry.transcript.jobId)
+        val history = store.delete(id)
+        mutable.update { it.copy(transcript = history.firstOrNull()?.transcript, history = history, retainedBytes = jobs.storageBytes(), stage = ProcessingStage.IDLE, percent = null, message = null) }
     }
 }

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextClearance
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -31,6 +32,7 @@ class TranscriptUiTest {
         val repository = (compose.activity.application as TranscriptionApplication).repository
         repository.ready.await()
         repository.discardJob()
+        repository.state.value.history.forEach { repository.delete(it.id) }
         repository.complete(transcript, ProcessingCancellation())
     }
 
@@ -71,6 +73,43 @@ class TranscriptUiTest {
         compose.waitUntil(5_000) { (compose.activity.application as TranscriptionApplication).repository.state.value.transcript == null }
         compose.onNodeWithText("Back").performClick()
         compose.onAllNodesWithText("Import audio or video")[0].assertExists()
+    }
+
+    @Test fun historySearchReopensOlderResultAcrossRotationAndDeletesOnlyThatEntry() {
+        val repository = (compose.activity.application as TranscriptionApplication).repository
+        val newer = Transcript("newer.wav", listOf(TranscriptSegment(0, 1_000, "Only the newer result.")))
+        runBlocking(Dispatchers.IO) { repository.complete(newer, ProcessingCancellation()) }
+        compose.waitUntil(5_000) {
+            androidx.lifecycle.ViewModelProvider(compose.activity)[TranscriptionViewModel::class.java].selectedTranscriptId.value == repository.state.value.history.first().id
+        }
+        compose.onNodeWithText("Transcript history").performScrollTo().performClick()
+        compose.onNodeWithText("Search history").performTextInput("EXAMPLE")
+        compose.onNodeWithText("example.mp4").assertExists()
+        compose.onNodeWithText("newer.wav").assertDoesNotExist()
+        compose.onNodeWithText("Search history").performTextClearance()
+        compose.onNodeWithText("Search history").performTextInput("廣東話")
+        compose.onNodeWithText("Open transcript").performScrollTo().performClick()
+        compose.activityRule.scenario.recreate()
+        compose.onNodeWithText("example.mp4").assertExists()
+        compose.onNodeWithText("Hello, world! 你好，廣東話！ A second sentence. 普通话。").assertExists()
+        compose.onNodeWithText("Copy").performScrollTo().performClick()
+        compose.waitUntil(5_000) {
+            var copied = ""
+            compose.runOnUiThread {
+                copied = (compose.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .primaryClip?.getItemAt(0)?.text.toString()
+            }
+            copied == TranscriptFormatter.format(transcript, TranscriptFormat.PLAIN_TEXT)
+        }
+        compose.onNodeWithText("Delete transcript").performScrollTo().performClick()
+        compose.onNodeWithText("Cancel").performClick()
+        org.junit.Assert.assertEquals(2, repository.state.value.history.size)
+        compose.onNodeWithText("Delete transcript").performScrollTo().performClick()
+        compose.onNodeWithText("Delete").performClick()
+        compose.waitUntil(5_000) { repository.state.value.history.size == 1 }
+        org.junit.Assert.assertEquals(newer, repository.state.value.history.single().transcript)
+        compose.onNodeWithText("Search history").performTextClearance()
+        compose.onNodeWithText("newer.wav").assertExists()
     }
     @Test fun downloadDialogRequiresAnExplicitMobileChoiceForEachRequest() {
         compose.onNodeWithText("Transcribe another file").performScrollTo().performClick()

@@ -75,7 +75,10 @@ class OfflinePipelineTest {
         repository.ready.await()
         val transcript = Transcript("example.mp4", listOf(TranscriptSegment(12_000, 13_000, "Café—你好，廣東話！"), TranscriptSegment(20_000, 21_000, "普通话，第二句。")))
         kotlinx.coroutines.withContext(Dispatchers.IO) { repository.complete(transcript, ProcessingCancellation()) }
+        val historicalId = repository.state.value.history.first().id
+        withContext(Dispatchers.IO) { repository.complete(Transcript("newer.wav", listOf(TranscriptSegment(0, 100, "Different text"))), ProcessingCancellation()) }
         val viewModel = TranscriptionViewModel(app)
+        withContext(Dispatchers.Main) { viewModel.openTranscript(historicalId) }
         for (format in TranscriptFormat.entries) {
             viewModel.selectFormat(format)
             viewModel.share()
@@ -107,7 +110,7 @@ class OfflinePipelineTest {
         assertTrue(TranscriptStore(directory).wasInterrupted())
         store.clearActive()
         assertFalse(store.wasInterrupted())
-        store.delete()
+        store.delete(store.loadHistory().single().id)
         assertNull(store.load())
         directory.deleteRecursively()
     }

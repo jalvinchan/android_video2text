@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -66,6 +69,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.video2text.ui.theme.Video2textTheme
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: TranscriptionViewModel
@@ -118,6 +123,8 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     val format by viewModel.format.collectAsStateWithLifecycle()
     val models by viewModel.models.collectAsStateWithLifecycle()
     val selectedPage by viewModel.page.collectAsStateWithLifecycle()
+    val selectedTranscriptId by viewModel.selectedTranscriptId.collectAsStateWithLifecycle()
+    val resultReturn by viewModel.resultReturn.collectAsStateWithLifecycle()
     val language by viewModel.language.collectAsStateWithLifecycle()
     val setupLocked = state.pendingJob?.options != null
     val page = when {
@@ -134,13 +141,14 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             TranscriptionPage.LANGUAGE -> TranscriptionPage.IMPORT
             TranscriptionPage.MODEL -> TranscriptionPage.LANGUAGE
             TranscriptionPage.MODELS -> modelsReturn
+            TranscriptionPage.RESULT -> resultReturn
             else -> TranscriptionPage.IMPORT
         })
     }
     BackHandler(enabled = page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING, onBack = back)
-    LaunchedEffect(state.stage) {
+    LaunchedEffect(state.stage, state.history.firstOrNull()?.id) {
         when (state.stage) {
-            ProcessingStage.COMPLETED -> viewModel.navigate(TranscriptionPage.RESULT)
+            ProcessingStage.COMPLETED -> viewModel.showCompletedResult()
             ProcessingStage.CANCELLED, ProcessingStage.FAILED -> viewModel.navigate(TranscriptionPage.IMPORT)
             else -> Unit
         }
@@ -151,8 +159,9 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbar = remember { SnackbarHostState() }
-    var search by rememberSaveable { mutableStateOf("") }
-    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var search by rememberSaveable(selectedTranscriptId) { mutableStateOf("") }
+    var historySearch by rememberSaveable { mutableStateOf("") }
+    var deleteTranscriptId by rememberSaveable { mutableStateOf<String?>(null) }
     var showLicenses by remember { mutableStateOf(false) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -174,7 +183,8 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             }
         }
     }
-    val transcript = state.transcript
+    val transcript = if (selectedTranscriptId == null) state.transcript
+        else state.history.firstOrNull { it.id == selectedTranscriptId }?.transcript
     val text = remember(transcript, format) { transcript?.let { TranscriptFormatter.format(it, format) }.orEmpty() }
     val matches = remember(text, search) { searchMatches(text, search) }
     val highlight = MaterialTheme.colorScheme.tertiaryContainer
@@ -186,7 +196,43 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
         }
     }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(pageScroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (page == TranscriptionPage.HISTORY) {
+            val entries = remember(state.history, historySearch) {
+                state.history.filter { entry ->
+                    historySearch.isBlank() || entry.transcript.sourceName.contains(historySearch, ignoreCase = true) ||
+                        TranscriptFormatter.format(entry.transcript, TranscriptFormat.PLAIN_TEXT).contains(historySearch, ignoreCase = true)
+                }
+            }
+            LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp),
+                contentPadding = PaddingValues(vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Video to text", style = MaterialTheme.typography.headlineMedium)
+                        Text("Transcript history", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = back) { Text("Back") }
+                        state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
+                        OutlinedTextField(value = historySearch, onValueChange = { historySearch = it },
+                            label = { Text("Search history") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Text("Saved locally. Clearing app data or uninstalling removes history. Save text files elsewhere to keep exported copies.", style = MaterialTheme.typography.bodySmall)
+                        if (entries.isEmpty()) Text(if (state.history.isEmpty()) "No saved transcripts yet." else "No matching transcripts.")
+                    }
+                }
+                items(entries, key = { it.id }) { entry ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(entry.transcript.sourceName, style = MaterialTheme.typography.titleMedium)
+                            Text(entry.completedAtMs?.let {
+                                "Completed: ${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(it))}"
+                            } ?: "Completion date unavailable", style = MaterialTheme.typography.bodySmall)
+                            Button(onClick = { viewModel.openTranscript(entry.id) }) { Text("Open transcript") }
+                            TextButton(onClick = { deleteTranscriptId = entry.id }) { Text("Delete transcript") }
+                        }
+                    }
+                }
+                item { TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses") } }
+            }
+        } else Column(Modifier.fillMaxSize().padding(padding).verticalScroll(pageScroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Video to text", style = MaterialTheme.typography.headlineMedium)
             Text(when (page) {
                 TranscriptionPage.IMPORT -> "Import audio or video"
@@ -195,6 +241,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 TranscriptionPage.PROCESSING -> "Processing"
                 TranscriptionPage.RESULT -> "Result"
                 TranscriptionPage.MODELS -> "Models"
+                TranscriptionPage.HISTORY -> "Transcript history"
             }, style = MaterialTheme.typography.titleLarge)
             if (page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING) TextButton(onClick = back) { Text("Back") }
             state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
@@ -223,7 +270,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                     Text("Retained media could not be opened. Discard it to import another file.")
                     TextButton(onClick = { confirmDiscard = true }) { Text("Discard unfinished job") }
                 } else Button(onClick = { picker.launch(arrayOf("audio/*", "video/*")) }, enabled = state.loaded && models.loaded, modifier = Modifier.fillMaxWidth()) { Text("Import audio or video") }
-                if (transcript != null) OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.RESULT) }) { Text("View saved result") }
+                OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.HISTORY) }, enabled = state.loaded) { Text("Transcript history") }
                 TextButton(onClick = { modelsReturn = page; viewModel.navigate(TranscriptionPage.MODELS) }) { Text("Manage models") }
                 Text("One saved unfinished job is kept until success or Discard, including after stopping or pausing. Audio uses about 3.84 MB per minute.", style = MaterialTheme.typography.bodySmall)
             }
@@ -305,8 +352,13 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 OutlinedTextField(value = search, onValueChange = { search = it }, label = { Text("Search transcript") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 if (search.isNotEmpty()) Text("${matches.size} matches. Exports always contain the full transcript.", style = MaterialTheme.typography.bodySmall)
                 SelectionContainer { Text(displayed, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = { confirmDelete = true }, enabled = !state.isActive) { Text("Delete transcript") }
+                TextButton(onClick = { deleteTranscriptId = selectedTranscriptId ?: state.history.firstOrNull()?.id }, enabled = !state.isActive) { Text("Delete transcript") }
+                OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.HISTORY) }) { Text("Transcript history") }
                 Button(onClick = { viewModel.navigate(TranscriptionPage.IMPORT) }) { Text("Transcribe another file") }
+            }
+            if (page == TranscriptionPage.RESULT && transcript == null && state.loaded) {
+                Text("This saved transcript is no longer available.")
+                OutlinedButton(onClick = { viewModel.navigate(TranscriptionPage.HISTORY) }) { Text("Transcript history") }
             }
             models.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
             if (page == TranscriptionPage.MODELS) {
@@ -368,10 +420,13 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             confirmButton = { TextButton(onClick = { viewModel.deleteModel(model); deleteModel = null }) { Text("Delete model") } },
             dismissButton = { TextButton(onClick = { deleteModel = null }) { Text("Cancel") } })
     }
-    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("Delete saved transcript?") },
-        text = { Text("This removes the transcript from this app. Text files you saved elsewhere are kept.") },
-        confirmButton = { TextButton(onClick = { confirmDelete = false; viewModel.delete() }) { Text("Delete") } },
-        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } })
+    deleteTranscriptId?.let { id ->
+        val name = state.history.firstOrNull { it.id == id }?.transcript?.sourceName.orEmpty()
+        AlertDialog(onDismissRequest = { deleteTranscriptId = null }, title = { Text("Delete saved transcript?") },
+            text = { Text("This removes $name from this app. Other transcripts and text files you saved elsewhere are kept.") },
+            confirmButton = { TextButton(onClick = { deleteTranscriptId = null; viewModel.delete(id) }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deleteTranscriptId = null }) { Text("Cancel") } })
+    }
     if (showLicenses) {
         val licenses = remember { context.assets.open("THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() } }
         AlertDialog(onDismissRequest = { showLicenses = false }, title = { Text("Open-source licenses") },

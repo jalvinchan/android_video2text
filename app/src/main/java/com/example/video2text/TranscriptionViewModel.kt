@@ -26,7 +26,7 @@ internal sealed interface UiEvent {
     data class Share(val intent: Intent) : UiEvent
 }
 
-enum class TranscriptionPage { IMPORT, LANGUAGE, MODEL, PROCESSING, RESULT, MODELS }
+enum class TranscriptionPage { IMPORT, LANGUAGE, MODEL, PROCESSING, RESULT, MODELS, HISTORY }
 
 class TranscriptionViewModel(application: Application, private val savedState: SavedStateHandle = SavedStateHandle()) : AndroidViewModel(application) {
     private val app get() = getApplication<TranscriptionApplication>()
@@ -34,6 +34,26 @@ class TranscriptionViewModel(application: Application, private val savedState: S
     val state = repository.state
     internal val models = app.models.state
     val page = savedState.getStateFlow("page", TranscriptionPage.IMPORT)
+    val selectedTranscriptId = savedState.getStateFlow<String?>("transcriptId", null)
+    val resultReturn = savedState.getStateFlow("resultReturn", TranscriptionPage.IMPORT)
+    internal fun selectedTranscript(): Transcript? = if (selectedTranscriptId.value == null) state.value.transcript
+        else state.value.history.firstOrNull { it.id == selectedTranscriptId.value }?.transcript
+    fun openTranscript(id: String, returnPage: TranscriptionPage = TranscriptionPage.HISTORY) {
+        if (state.value.history.none { it.id == id }) { report("This saved transcript is no longer available."); return }
+        savedState["transcriptId"] = id
+        savedState["resultReturn"] = returnPage
+        navigate(TranscriptionPage.RESULT)
+    }
+    fun openLatestResult() {
+        state.value.history.firstOrNull()?.let { openTranscript(it.id, TranscriptionPage.IMPORT) }
+    }
+    fun showCompletedResult() {
+        val id = state.value.history.firstOrNull()?.id ?: return
+        if (savedState.get<String>("shownCompletion") != id) {
+            savedState["shownCompletion"] = id
+            openLatestResult()
+        }
+    }
     val language = savedState.getStateFlow("language", app.models.state.value.options.language)
     fun navigate(page: TranscriptionPage) { savedState["page"] = page }
     fun selectLanguage(language: SpeechLanguage) {
@@ -115,15 +135,19 @@ class TranscriptionViewModel(application: Application, private val savedState: S
 
     override fun onCleared() { importCancellation?.cancel(); super.onCleared() }
 
-    fun delete() {
+    fun delete(id: String) {
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repository.delete() } }
+            try {
+                withContext(Dispatchers.IO) { repository.delete(id) }
+                savedState["transcriptId"] = null
+                navigate(TranscriptionPage.HISTORY)
+            }
             catch (_: Exception) { report("The saved transcript could not be deleted. Try again.") }
         }
     }
 
     fun copy() {
-        val transcript = state.value.transcript ?: return
+        val transcript = selectedTranscript() ?: return
         val format = selectedFormat.value
         viewModelScope.launch {
             val text = withContext(Dispatchers.Default) { TranscriptFormatter.format(transcript, format) }
@@ -137,7 +161,7 @@ class TranscriptionViewModel(application: Application, private val savedState: S
     }
 
     fun share() {
-        val transcript = state.value.transcript ?: return
+        val transcript = selectedTranscript() ?: return
         val format = selectedFormat.value
         viewModelScope.launch {
             try {
@@ -159,7 +183,7 @@ class TranscriptionViewModel(application: Application, private val savedState: S
     }
 
     fun prepareSave(): String? {
-        val transcript = state.value.transcript ?: return null
+        val transcript = selectedTranscript() ?: return null
         val format = selectedFormat.value
         val filename = TranscriptFormatter.fileName(transcript, format)
         pendingSave = filename to TranscriptFormatter.format(transcript, format)

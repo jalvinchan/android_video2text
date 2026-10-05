@@ -70,9 +70,17 @@ mode. The app requests no microphone or broad storage permission.
 Results default to **Plain text**. **Timestamps** formats the same stored segments
 without running inference again. Search highlights matches. Copy, Share, and Save
 as `.txt` export the entire selected format. Share uses a UTF-8 file to avoid
-Binder text size limits. Only the latest successful transcript is retained. A
-failed or cancelled job preserves the previous result. Transcript storage remains
-compatible with the original English app.
+Binder text size limits. **Transcript history** on the import and result pages
+lists every successful result, newest first, with filename and completion date.
+Search history by filename or transcript text, then open a result to search its
+contents or use Copy/Share/Save in either format. Individual deletion requires
+confirmation and keeps other transcripts, unfinished work and exported files.
+
+History stores text and segment timestamps locally, outside Android backup.
+Clearing app data or uninstalling removes it; text files saved elsewhere survive.
+A failed, paused or discarded job keeps completed history. The original saved
+result migrates automatically, preserving its text, timestamps and job ID; its
+saved-file modification date supplies the legacy completion date when available.
 
 ## Build and tests
 
@@ -170,7 +178,7 @@ then decodes the source from the beginning, dropping already processed cores.
 End-of-stream/sample validation and the finished record are committed before
 source deletion. Legacy full-PCM jobs retain their existing recovery path.
 Settings include the model hash and engine/section revision. Partial text remains
-separate from the latest successful transcript. Auto uses Silero threshold 0.5,
+separate from completed transcript history. Auto uses Silero threshold 0.5,
 minimum speech/silence 250 ms, and padding 30 ms. Detected spans are clipped to
 ordered, disjoint cores, with inference sections limited to 30 seconds. Long spans
 are split without overlapping inference input or dropping audio at a boundary.
@@ -194,19 +202,27 @@ outside cache and Android backup, including after cancellation or failure.
 Reopening offers explicit Resume or Discard and never restarts inference automatically.
 Committed windows and sections are reused; decoding restarts from the retained
 source and skips processed cores. Older full-PCM jobs reuse completed extraction. After a successful result commit, or explicit Discard, retained media and
-section checkpoints are removed. The last successful transcript survives failure,
+section checkpoints are removed. Completed transcript history survives failure,
 cancellation and Discard. Shared exports older than one day are cleaned
 on startup.
 
 `Transcript` remains the canonical result. `TranscriptFormatter` owns both
-formats and export names. `TranscriptStore` atomically replaces the latest result
-with a cancellation check at the commit boundary.
+formats and export names. `SavedTranscript` adds an ID and completion date.
+`TranscriptStore` atomically rewrites `noBackupFilesDir/transcript-history.json`
+when appending or deleting a result; this simple local store loads the history
+into memory and rewrites its text on changes. The repository serializes storage
+operations. Cancellation and successful commits share a commit boundary, with
+explicit sync and readback checks before job cleanup. Existing job IDs prevent
+retrying a finished job from duplicating a history entry. Migration commits the
+history before removing `latest-transcript.json`; unreadable history is retained
+and cannot be overwritten by a new result. The view model saves the selected
+history ID so rotation and exports keep the opened result.
 
 ## Verification limits
 
 Emulator verification covers builds for both ABIs, unit tests, lint, native
 fixtures, persistence/exports, download policy and recovery, and atomic model
-installation. Audio-import and progressive-pipeline regression tests have
+installation. Audio-import, progressive-pipeline and transcript-history regression tests have
 been compiled but not run. Progressive recovery, codec backpressure on devices and audio-only codec
 behavior remain unverified; no speed improvement has been measured. See
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.

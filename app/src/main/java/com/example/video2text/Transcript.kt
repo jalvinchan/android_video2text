@@ -10,6 +10,13 @@ data class TranscriptSegment(val startMs: Long, val endMs: Long, val text: Strin
 
 data class Transcript(val sourceName: String, val segments: List<TranscriptSegment>, val jobId: String? = null)
 
+data class SavedTranscript(val id: String, val completedAtMs: Long?, val transcript: Transcript) {
+    init {
+        require(id.isNotBlank())
+        require(completedAtMs == null || completedAtMs >= 0)
+    }
+}
+
 enum class TranscriptFormat { PLAIN_TEXT, TIMESTAMPS }
 
 object TranscriptFormatter {

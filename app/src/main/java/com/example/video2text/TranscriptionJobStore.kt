@@ -54,12 +54,16 @@ internal class TranscriptionJobStore(root: File) {
     val windowAudio = File(directory, "window.f32")
 
     fun load(completedJobId: String? = null): TranscriptionJob? {
+        return loadExcludingCompleted(setOfNotNull(completedJobId))
+    }
+
+    fun loadExcludingCompleted(completedJobIds: Set<String>): TranscriptionJob? {
         if (!record.baseFile.exists() && !File(record.baseFile.path + ".bak").exists()) {
             discard()
             return null
         }
         val json = record.openRead().bufferedReader().use { JSONObject(it.readText()) }
-        if (completedJobId != null && json.getString("id") == completedJobId) {
+        if (json.getString("id") in completedJobIds) {
             discard()
             return null
         }
