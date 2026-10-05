@@ -23,13 +23,15 @@ codec support. Audio-only sources show **Preparing audio**; videos show
 Existing video jobs and saved transcripts remain readable.
 
 Processing controls reflect what can be retained: **Cancel import** discards an
-incomplete copy; **Stop for now** during extraction keeps the source file but
-restarts extraction on Resume; **Pause transcription** keeps saved PCM audio and
-completed speech sections. Resume repeats the unfinished section, containing at
-most 30 seconds of audio. The processing screen and notification explain this.
-The retained-job card offers **Resume**, shows saved progress and fixed settings,
-and explains where processing continues. **Discard unfinished job** remains a
-separate action with confirmation and keeps the previous successful transcript.
+incomplete copy; **Pause transcription** keeps the saved source, current audio
+window and completed speech sections. Resume reuses the saved window and repeats
+an unfinished section, containing at most 30 seconds of audio. Decoding then
+restarts from the source and skips processed windows without repeating completed
+inference. The processing screen and notification explain this. The retained-job
+card offers **Resume**, shows saved progress and fixed settings, and explains
+where processing continues. **Discard unfinished job** requires confirmation and
+keeps the previous successful transcript. Older full-PCM jobs reuse their saved
+audio and original section plan.
 
 | Language | Behavior |
 | --- | --- |
@@ -151,37 +153,47 @@ service uses `mediaProcessing` on API 35+, `specialUse` on API 34, `dataSync` on
 API 29–33, and an untyped foreground service on API 24–28. Notification denial
 does not prevent transcription.
 
-`MediaAudioDecoder`, `PcmConversion`, and `PcmResampler` stream mono 16 kHz PCM to
-disk, retaining audio presentation-time gaps and the first offset. JNI maps PCM;
-Kotlin never buffers the entire audio track. Both guided and Auto inference use
-ordered, disjoint sections of at most 30 seconds. The complete section plan is
-saved before inference. Each completed section, including a section with no text,
-is saved atomically with its boundaries, original audio timestamps and job ID.
-Resume skips completed sections and repeats only an unfinished section. Fixed
-settings include the model hash and engine/section revision. Partial text remains
-separate from the latest successful transcript. Auto scans 30-second cores with a
-one-second detector context on either side. Silero uses threshold 0.5, minimum
-speech/silence 250 ms, and padding 30 ms. Detected spans are clipped to ordered,
-disjoint cores, with inference sections limited to 30 seconds. Long spans are
-split without overlapping input or dropping audio at a core boundary.
+`MediaAudioDecoder`, `PcmConversion`, and `PcmResampler` stream mono 16 kHz PCM,
+retaining audio presentation-time gaps and the first offset. `PcmWindows` groups
+samples into disjoint 30-second cores with up to one second of detector context
+on each side. Each window is written/synced and its record committed before JNI
+maps it. Its bounded section plan is saved before inference; completed sections,
+including empty ones, are saved atomically with boundaries, original timestamps
+and job ID. Decoding blocks while the window is consumed, so no queued PCM can
+grow. The first window is transcribed before extraction finishes. A final window
+may be shorter, and sources shorter than a core are decoded before inference.
+
+Resume reuses retained window PCM and skips committed sections. After every
+section of a window is saved, its processed-sample boundary is committed before
+PCM deletion. Auto windows without speech also advance that boundary. Resume
+then decodes the source from the beginning, dropping already processed cores.
+End-of-stream/sample validation and the finished record are committed before
+source deletion. Legacy full-PCM jobs retain their existing recovery path.
+Settings include the model hash and engine/section revision. Partial text remains
+separate from the latest successful transcript. Auto uses Silero threshold 0.5,
+minimum speech/silence 250 ms, and padding 30 ms. Detected spans are clipped to
+ordered, disjoint cores, with inference sections limited to 30 seconds. Long spans
+are split without overlapping inference input or dropping audio at a boundary.
 
 Each section detects its highest-probability eligible language. Cantonese is
 excluded for Base/Small, and its token is validated for Turbo. Transcription
-context resets between sections. One Whisper model remains loaded per job.
+context resets between sections. One Whisper model and a lazily loaded Auto
+detector remain loaded per run and are released on stop/failure/completion.
 Native timestamps include both the speech section offset and original audio
-offset. Progress aggregates monotonically across the mapped audio. Native abort
+offset. Progress reflects decoding or transcription of the current window within
+the source timeline; unavailable durations show indeterminate progress. Native abort
 callbacks remain active during transcription; model loading, language detection,
 and bounded detector passes check cancellation between calls.
 
-Allow storage for the private model files, staged source file, about 3.84 MB of
-PCM per minute, and both staged/private copies of downloaded models during installation.
+Allow storage for the private model files, staged source file, one bounded PCM window of at most 2.048 MB
+(plus a temporary file while committing it), and both staged/private copies of downloaded models during installation.
 Target a recent ARM64 phone with at least 6 GB RAM. Larger models increase memory
 and processing cost; speed and accuracy are not guaranteed. Native resources,
 streams and codecs are released on terminal paths. One unfinished job is retained
 outside cache and Android backup, including after cancellation or failure.
 Reopening offers explicit Resume or Discard and never restarts inference automatically.
-A completed extraction is reused; interrupted extraction restarts from the retained
-source file. After a successful result commit, or explicit Discard, retained media and
+Committed windows and sections are reused; decoding restarts from the retained
+source and skips processed cores. Older full-PCM jobs reuse completed extraction. After a successful result commit, or explicit Discard, retained media and
 section checkpoints are removed. The last successful transcript survives failure,
 cancellation and Discard. Shared exports older than one day are cleaned
 on startup.
@@ -194,8 +206,9 @@ with a cancellation check at the commit boundary.
 
 Emulator verification covers builds for both ABIs, unit tests, lint, native
 fixtures, persistence/exports, download policy and recovery, and atomic model
-installation. Audio-import regression tests have been compiled but not run;
-audio-only device codec behavior remains unverified. See
+installation. Audio-import and progressive-pipeline regression tests have
+been compiled but not run. Progressive recovery, codec backpressure on devices and audio-only codec
+behavior remain unverified; no speed improvement has been measured. See
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.
 
 Cantonese accuracy beyond the included fixture and larger-model performance on

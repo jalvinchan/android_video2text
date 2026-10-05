@@ -207,9 +207,9 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                             Text(pending.sourceName, style = MaterialTheme.typography.titleMedium)
                             pending.sourceDurationMs?.let { Text("Duration: ${it / 1000} seconds") }
                             Text("Retained media: ${state.retainedBytes / (1024 * 1024)} MiB")
-                            Text(if (pending.hasAudio) "Extracted audio is saved." else if (pending.sourceHasVideo) "Video is saved; audio will be extracted when you start." else "Audio source is saved; it will be prepared when you start.")
+                            Text(if (pending.progressive) "Completed speech sections and any current audio window are saved." else if (pending.hasAudio) "Extracted audio is saved." else if (pending.sourceHasVideo) "Video is saved; audio will be extracted when you start." else "Audio source is saved; it will be prepared when you start.")
                             pending.options?.let { Text("Fixed settings: ${it.label}") }
-                            pending.sections?.let { Text("${pending.completedSections} of ${it.size} speech sections saved") }
+                            pending.sections?.let { Text(if (pending.progressive && !pending.extractionComplete) "${pending.completedSections} speech sections saved; more audio remains" else "${pending.completedSections} of ${it.size} speech sections saved") }
                             if (pending.options != null) Text(pending.resumeExplanation())
                             if (pending.options == null) Button(onClick = { viewModel.navigate(TranscriptionPage.LANGUAGE) }) { Text("Continue") }
                             else {

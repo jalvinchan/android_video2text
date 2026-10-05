@@ -57,7 +57,7 @@ class TranscriptionProcessRecoveryTest {
                 val first = File(repository.jobs.directory, "section-0.json").readBytes()
                 val started = repository.startJob(saved.id, saved.options)
                 val result = OfflineTranscriber(app).resume(started, repository.jobs, ProcessingCancellation(), repository::progress) { checkpoint ->
-                    assertTrue(checkpoint.completedSections > 1)
+                    assertTrue(checkpoint.completedSections >= saved.completedSections) // Window/decoder metadata can commit before the next section.
                     repository.jobUpdated(checkpoint)
                 }
                 assertArrayEquals(first, File(repository.jobs.directory, "section-0.json").readBytes())

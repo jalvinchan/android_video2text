@@ -13,6 +13,7 @@ import java.nio.ByteOrder
 import kotlin.math.sqrt
 
 internal data class DecodedAudio(val file: File, val offsetMs: Long, val durationMs: Long)
+internal data class DecodedTimeline(val offsetMs: Long, val samples: Int)
 internal data class SourceMedia(val hasVideo: Boolean, val durationMs: Long?)
 
 internal class MediaAudioDecoder {
@@ -58,6 +59,27 @@ internal class MediaAudioDecoder {
     }
 
     fun decode(source: File, destination: File, checkCancelled: () -> Unit, progress: (Int?) -> Unit): DecodedAudio {
+        val bytes = ByteBuffer.allocate(64 * 1_024).order(ByteOrder.LITTLE_ENDIAN)
+        val timeline = BufferedOutputStream(FileOutputStream(destination), 64 * 1_024).use { output ->
+            fun flushPcm() {
+                if (destination.parentFile!!.usableSpace < bytes.position() + 1024L * 1024) {
+                    throw ProcessingException("Not enough free storage. Free some space and select the file again.")
+                }
+                output.write(bytes.array(), 0, bytes.position())
+                bytes.clear()
+            }
+            val result = decodeSamples(source, checkCancelled, progress) { sample, _ ->
+                bytes.putFloat(sample)
+                if (!bytes.hasRemaining()) flushPcm()
+            }
+            flushPcm()
+            result
+        }
+        return DecodedAudio(destination, timeline.offsetMs, timeline.samples.toLong() * 1_000 / PCM_RATE)
+    }
+
+    /** Emits converted samples synchronously; a window consumer supplies backpressure. */
+    fun decodeSamples(source: File, checkCancelled: () -> Unit, progress: (Int?) -> Unit, emit: (Float, Long) -> Unit): DecodedTimeline {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -78,96 +100,84 @@ internal class MediaAudioDecoder {
             var outputEncoding: PcmEncoding? = null
             var samples = 0L
             var energy = 0.0
-            val bytes = ByteBuffer.allocate(64 * 1_024).order(ByteOrder.LITTLE_ENDIAN)
             var lastActivity = SystemClock.elapsedRealtime()
-            BufferedOutputStream(FileOutputStream(destination), 64 * 1_024).use { output ->
-                fun flushPcm() {
-                    if (destination.parentFile!!.usableSpace < bytes.position() + 1024L * 1024) {
-                        throw ProcessingException("Not enough free storage. Free some space and select the file again.")
-                    }
-                    output.write(bytes.array(), 0, bytes.position())
-                    bytes.clear()
-                }
-                while (!outputEnded) {
-                    checkCancelled()
-                    if (!inputEnded) {
-                        val index = decoder.dequeueInputBuffer(10_000)
-                        if (index >= 0) {
-                            val buffer = decoder.getInputBuffer(index) ?: error("Audio decoder input is unavailable.")
-                            val size = extractor.readSampleData(buffer, 0)
-                            if (size < 0) {
-                                decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputEnded = true
-                            } else {
-                                require(extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) {
-                                    "Protected audio cannot be transcribed."
-                                }
-                                decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                            lastActivity = SystemClock.elapsedRealtime()
-                        }
-                    }
-                    val index = decoder.dequeueOutputBuffer(info, 10_000)
-                    when {
-                        index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            val format = decoder.outputFormat
-                            val rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                            val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                            val encoding = when (if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) format.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT) {
-                                AudioFormat.ENCODING_PCM_8BIT -> PcmEncoding.INT8
-                                AudioFormat.ENCODING_PCM_16BIT -> PcmEncoding.INT16
-                                AudioFormat.ENCODING_PCM_FLOAT -> PcmEncoding.FLOAT32
-                                AudioFormat.ENCODING_PCM_24BIT_PACKED -> PcmEncoding.INT24
-                                AudioFormat.ENCODING_PCM_32BIT -> PcmEncoding.INT32
-                                else -> throw ProcessingException("This audio decoder uses an unsupported sample format.")
-                            }
-                            if (conversion != null) {
-                                require(rate == outputRate && channels == outputChannels && encoding == outputEncoding) {
-                                    "The audio format changes inside this file. Choose a video with a single audio format."
-                                }
-                            } else {
-                                outputRate = rate
-                                outputChannels = channels
-                                outputEncoding = encoding
-                                conversion = PcmConversion(rate, channels, encoding, checkCancelled) { sample ->
-                                    require(samples < Int.MAX_VALUE) { "This file is too long to transcribe." }
-                                    bytes.putFloat(sample)
-                                    samples++
-                                    energy += sample.toDouble() * sample
-                                    if (!bytes.hasRemaining()) flushPcm()
-                                }
-                            }
-                            lastActivity = SystemClock.elapsedRealtime()
-                        }
-                        index >= 0 -> {
-                            try {
-                                if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                                    val buffer = decoder.getOutputBuffer(index) ?: error("Audio decoder output is unavailable.")
-                                    buffer.position(info.offset)
-                                    buffer.limit(info.offset + info.size)
-                                    (conversion ?: error("Audio decoder did not provide a sample format.")).accept(buffer, info.presentationTimeUs)
-                                    progress(if (durationUs > 0) (info.presentationTimeUs * 100 / durationUs).toInt().coerceIn(0, 99) else null)
-                                }
-                                outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                            } finally {
-                                decoder.releaseOutputBuffer(index, false)
-                            }
-                            lastActivity = SystemClock.elapsedRealtime()
-                        }
-                    }
-                    if (SystemClock.elapsedRealtime() - lastActivity > 30_000) {
-                        throw ProcessingException("The audio decoder stopped responding. Try another file or codec.")
-                    }
-                }
+            while (!outputEnded) {
                 checkCancelled()
-                conversion?.finish()
-                flushPcm()
+                if (!inputEnded) {
+                    val index = decoder.dequeueInputBuffer(10_000)
+                    if (index >= 0) {
+                        val buffer = decoder.getInputBuffer(index) ?: error("Audio decoder input is unavailable.")
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) {
+                            decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputEnded = true
+                        } else {
+                            require(extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) {
+                                "Protected audio cannot be transcribed."
+                            }
+                            decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                        lastActivity = SystemClock.elapsedRealtime()
+                    }
+                }
+                val index = decoder.dequeueOutputBuffer(info, 10_000)
+                when {
+                    index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val format = decoder.outputFormat
+                        val rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        val encoding = when (if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) format.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT) {
+                            AudioFormat.ENCODING_PCM_8BIT -> PcmEncoding.INT8
+                            AudioFormat.ENCODING_PCM_16BIT -> PcmEncoding.INT16
+                            AudioFormat.ENCODING_PCM_FLOAT -> PcmEncoding.FLOAT32
+                            AudioFormat.ENCODING_PCM_24BIT_PACKED -> PcmEncoding.INT24
+                            AudioFormat.ENCODING_PCM_32BIT -> PcmEncoding.INT32
+                            else -> throw ProcessingException("This audio decoder uses an unsupported sample format.")
+                        }
+                        if (conversion != null) {
+                            require(rate == outputRate && channels == outputChannels && encoding == outputEncoding) {
+                                "The audio format changes inside this file. Choose a video with a single audio format."
+                            }
+                        } else {
+                            outputRate = rate
+                            outputChannels = channels
+                            outputEncoding = encoding
+                            conversion = PcmConversion(rate, channels, encoding, checkCancelled) { sample ->
+                                require(samples < Int.MAX_VALUE) { "This file is too long to transcribe." }
+                                samples++
+                                energy += sample.toDouble() * sample
+                                emit(sample, (conversion?.firstPresentationTimeUs ?: 0L) / 1_000)
+                            }
+                        }
+                        lastActivity = SystemClock.elapsedRealtime()
+                    }
+                    index >= 0 -> {
+                        try {
+                            if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                                val buffer = decoder.getOutputBuffer(index) ?: error("Audio decoder output is unavailable.")
+                                buffer.position(info.offset)
+                                buffer.limit(info.offset + info.size)
+                                (conversion ?: error("Audio decoder did not provide a sample format.")).accept(buffer, info.presentationTimeUs)
+                                progress(if (durationUs > 0) (info.presentationTimeUs * 100 / durationUs).toInt().coerceIn(0, 99) else null)
+                            }
+                            outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        } finally {
+                            decoder.releaseOutputBuffer(index, false)
+                        }
+                        lastActivity = SystemClock.elapsedRealtime()
+                    }
+                }
+                if (SystemClock.elapsedRealtime() - lastActivity > 30_000) {
+                    throw ProcessingException("The audio decoder stopped responding. Try another file or codec.")
+                }
             }
+            checkCancelled()
+            conversion?.finish()
             require(samples > 0) { "This file contains no decodable audio." }
             require(sqrt(energy / samples) >= 0.0001) { "The audio is silent. Select a file with audible speech." }
             progress(100)
-            return DecodedAudio(destination, (conversion?.firstPresentationTimeUs ?: 0L) / 1_000, samples * 1_000 / 16_000)
+            return DecodedTimeline((conversion?.firstPresentationTimeUs ?: 0L) / 1_000, samples.toInt())
         } finally {
             // release() also stops the codec; this path is safe if configure/start failed.
             try { codec?.release() } finally { extractor.release() }

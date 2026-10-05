@@ -10,12 +10,19 @@ import java.io.IOException
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 import org.json.JSONArray
 
 data class AudioSection(val startSample: Int, val endSample: Int)
+
+data class AudioWindow(val startSample: Int, val coreStartSample: Int, val coreEndSample: Int, val samples: Int, val planned: Boolean = false)
+
+private const val LEGACY_REVISION = "whisper-1.7.6-sections-v1"
+private const val PROGRESSIVE_REVISION = "whisper-1.7.6-windows-v1"
 
 data class TranscriptionJob(
     val id: String,
@@ -27,10 +34,14 @@ data class TranscriptionJob(
     val audioBytes: Long? = null,
     val sections: List<AudioSection>? = null,
     val completedSections: Int = 0,
+    val progressive: Boolean = false,
+    val processedSamples: Int = 0,
+    val extractionComplete: Boolean = false,
+    val window: AudioWindow? = null,
     val sourceHasVideo: Boolean = true, // Records saved before audio import were video-only.
 ) {
     val hasAudio: Boolean get() = audioBytes != null
-    val needsModel: Boolean get() = sections == null || completedSections < sections.size
+    val needsModel: Boolean get() = (progressive && !extractionComplete) || sections == null || completedSections < sections.size
 }
 
 /** One private durable job. Only committed source/audio files are referenced by the record. */
@@ -40,6 +51,7 @@ internal class TranscriptionJobStore(root: File) {
     // Keep the on-disk filename so existing saved jobs remain resumable.
     val source = File(directory, "input-video")
     val audio = File(directory, "audio.f32")
+    val windowAudio = File(directory, "window.f32")
 
     fun load(completedJobId: String? = null): TranscriptionJob? {
         if (!record.baseFile.exists() && !File(record.baseFile.path + ".bak").exists()) {
@@ -55,23 +67,44 @@ internal class TranscriptionJobStore(root: File) {
         val options = if (json.has("language")) TranscriptionOptions(
             SpeechLanguage.valueOf(json.getString("language")), SpeechModel.valueOf(json.getString("model"))) else null
         options?.validate()
+        val progressive = json.optBoolean("progressive", false)
         // The model hash pins the settings to the exact catalog revision used at Start.
-        require(options == null || (json.getString("modelSha256") == options.model.sha256 && json.getString("sectionRevision") == "whisper-1.7.6-sections-v1")) { "The saved model revision has changed. Discard this job and import again." }
+        require(options == null || (json.getString("modelSha256") == options.model.sha256 && json.getString("sectionRevision") == if (progressive) PROGRESSIVE_REVISION else LEGACY_REVISION)) { "The saved model revision has changed. Discard this job and import again." }
         var job = TranscriptionJob(json.getString("id"), json.getString("sourceName"),
             when {
                 json.has("sourceDurationMs") -> json.getLong("sourceDurationMs")
                 json.has("videoDurationMs") -> json.getLong("videoDurationMs")
                 else -> null
             }, options,
-            if (json.has("audioBytes")) json.getLong("audioOffsetMs") else null,
-            if (json.has("audioBytes")) json.getLong("audioDurationMs") else null,
+            if (json.has("audioOffsetMs")) json.getLong("audioOffsetMs") else null,
+            if (json.has("audioDurationMs")) json.getLong("audioDurationMs") else null,
             if (json.has("audioBytes")) json.getLong("audioBytes") else null,
             if (json.has("sections")) json.getJSONArray("sections").let { list -> List(list.length()) { index ->
                 val section = list.getJSONArray(index)
                 AudioSection(section.getInt(0), section.getInt(1))
-            } } else null, sourceHasVideo = json.optBoolean("sourceHasVideo", true))
+            } } else null,
+            progressive = progressive, processedSamples = json.optInt("processedSamples", 0),
+            extractionComplete = json.optBoolean("extractionComplete", false),
+            window = json.optJSONObject("window")?.let { AudioWindow(it.getInt("start"), it.getInt("coreStart"), it.getInt("coreEnd"), it.getInt("samples"), it.getBoolean("planned")) },
+            sourceHasVideo = json.optBoolean("sourceHasVideo", true))
         require(job.id.isNotBlank())
-        if (job.hasAudio) {
+        if (job.progressive) {
+            require(options != null && !job.hasAudio && job.sections != null && job.processedSamples >= 0)
+            require(!job.extractionComplete || (job.processedSamples > 0 && job.window == null && job.audioDurationMs == job.processedSamples.toLong() * 1000 / PCM_RATE))
+            if (job.processedSamples > 0 || job.window != null || job.extractionComplete) require(job.audioOffsetMs != null && job.audioOffsetMs >= 0)
+            if (!job.extractionComplete) require(source.isFile && source.length() > 0) { "The retained source file is unavailable. Discard this job and import again." }
+            else source.delete()
+            job.window?.let { window ->
+                require(window.coreStartSample == job.processedSamples && window.coreStartSample % PCM_WINDOW == 0 &&
+                    window.startSample == maxOf(0, window.coreStartSample - PCM_HALO) &&
+                    window.coreEndSample > window.coreStartSample && window.coreEndSample.toLong() <= window.coreStartSample.toLong() + PCM_WINDOW &&
+                    window.samples > 0 && window.samples <= PCM_WINDOW + 2 * PCM_HALO &&
+                    window.startSample.toLong() + window.samples >= window.coreEndSample &&
+                    window.startSample.toLong() + window.samples <= window.coreEndSample.toLong() + PCM_HALO &&
+                    windowAudio.isFile && windowAudio.length() == window.samples * 4L) { "The retained audio window is incomplete. Discard this job and import again." }
+            } ?: windowAudio.delete()
+            audio.delete()
+        } else if (job.hasAudio) {
             require(options != null && job.audioOffsetMs!! >= 0 && job.audioDurationMs!! > 0)
             require(audio.isFile && audio.length() == job.audioBytes && audio.length() > 0 && audio.length() % 4 == 0L) { "The retained audio is incomplete. Discard this job and import again." }
             require(audio.length() / 4 * 1000 / 16000 == job.audioDurationMs)
@@ -81,9 +114,9 @@ internal class TranscriptionJobStore(root: File) {
             audio.delete() // Uncommitted extraction must never be resumed.
         }
         job.sections?.let { sections ->
-            require(job.hasAudio && sections.withIndex().all { (index, section) ->
+            require((job.hasAudio || job.progressive) && sections.withIndex().all { (index, section) ->
                 section.startSample >= (sections.getOrNull(index - 1)?.endSample ?: 0) &&
-                    section.endSample > section.startSample && section.endSample.toLong() <= job.audioBytes!! / 4 &&
+                    section.endSample > section.startSample && section.endSample.toLong() <= (if (job.progressive) (job.window?.coreEndSample ?: job.processedSamples).toLong() else job.audioBytes!! / 4) &&
                     section.endSample - section.startSample <= 30 * 16000
             }) { "The saved speech section plan is damaged. Discard this job and import again." }
             var completed = 0
@@ -92,10 +125,17 @@ internal class TranscriptionJobStore(root: File) {
                 readSection(job, index) // Validate before offering Resume.
                 completed++
             }
+            if (job.progressive) {
+                require(sections.drop(completed).all { it.startSample >= job.processedSamples }) { "A completed audio window has missing checkpoints. Discard this job and import again." }
+                job.window?.let { window ->
+                    require(sections.all { it.endSample <= job.processedSamples || (window.planned && it.startSample >= window.coreStartSample) })
+                }
+            }
             job = job.copy(completedSections = completed)
         }
         File(directory, "input-video.part").delete()
         File(directory, "audio.part").delete()
+        File(directory, "window.part").delete()
         return job
     }
 
@@ -104,8 +144,14 @@ internal class TranscriptionJobStore(root: File) {
         val json = JSONObject().put("version", 1).put("id", job.id).put("sourceName", job.sourceName)
         json.put("sourceHasVideo", job.sourceHasVideo)
         job.sourceDurationMs?.let { json.put("sourceDurationMs", it) }
-        job.options?.let { json.put("language", it.language.name).put("model", it.model.name).put("modelSha256", it.model.sha256).put("sectionRevision", "whisper-1.7.6-sections-v1") }
-        if (job.hasAudio) json.put("audioOffsetMs", job.audioOffsetMs).put("audioDurationMs", job.audioDurationMs).put("audioBytes", job.audioBytes)
+        job.options?.let { json.put("language", it.language.name).put("model", it.model.name).put("modelSha256", it.model.sha256).put("sectionRevision", if (job.progressive) PROGRESSIVE_REVISION else LEGACY_REVISION) }
+        job.audioOffsetMs?.let { json.put("audioOffsetMs", it) }
+        job.audioDurationMs?.let { json.put("audioDurationMs", it) }
+        job.audioBytes?.let { json.put("audioBytes", it) }
+        if (job.progressive) {
+            json.put("progressive", true).put("processedSamples", job.processedSamples).put("extractionComplete", job.extractionComplete)
+            job.window?.let { json.put("window", JSONObject().put("start", it.startSample).put("coreStart", it.coreStartSample).put("coreEnd", it.coreEndSample).put("samples", it.samples).put("planned", it.planned)) }
+        }
         job.sections?.let { sections ->
             json.put("sections", JSONArray().also { list -> sections.forEach { list.put(JSONArray().put(it.startSample).put(it.endSample)) } })
         }
@@ -184,6 +230,51 @@ internal class TranscriptionJobStore(root: File) {
             source.delete()
             return ready
         } finally { partial.delete() }
+    }
+
+    fun retainWindow(job: TranscriptionJob, start: Int, coreStart: Int, coreEnd: Int, samples: FloatArray, offsetMs: Long, cancellation: ProcessingCancellation): TranscriptionJob {
+        require(job.progressive && job.window == null && coreStart == job.processedSamples)
+        require(offsetMs >= 0) { "The source contains invalid audio timestamps." }
+        job.audioOffsetMs?.let { require(it == offsetMs) { "The source audio timestamps changed. Discard this job and import again." } }
+        val partial = File(directory, "window.part")
+        try {
+            requireSpace(samples.size * 4L)
+            FileOutputStream(partial).use { output ->
+                val bytes = ByteBuffer.allocate(64 * 1024).order(ByteOrder.LITTLE_ENDIAN)
+                for (sample in samples) {
+                    if (!bytes.hasRemaining()) {
+                        cancellation.check()
+                        output.write(bytes.array())
+                        bytes.clear()
+                    }
+                    bytes.putFloat(sample)
+                }
+                output.write(bytes.array(), 0, bytes.position())
+                output.fd.sync()
+            }
+            cancellation.check()
+            check(partial.renameTo(windowAudio)) { "The audio window could not be saved." }
+            val ready = job.copy(audioOffsetMs = offsetMs, window = AudioWindow(start, coreStart, coreEnd, samples.size))
+            save(ready)
+            return ready
+        } finally { partial.delete() }
+    }
+
+    fun finishWindow(job: TranscriptionJob): TranscriptionJob {
+        val window = requireNotNull(job.window)
+        require(window.planned && job.completedSections == requireNotNull(job.sections).size)
+        val next = job.copy(processedSamples = window.coreEndSample, window = null)
+        save(next) // Commit progress before removing the only PCM copy.
+        windowAudio.delete()
+        return next
+    }
+
+    fun finishDecoding(job: TranscriptionJob, timeline: DecodedTimeline): TranscriptionJob {
+        require(job.progressive && job.window == null && job.processedSamples == timeline.samples)
+        val finished = job.copy(extractionComplete = true, audioOffsetMs = timeline.offsetMs, audioDurationMs = timeline.samples.toLong() * 1000 / PCM_RATE)
+        save(finished)
+        source.delete() // Checkpoints and end-of-stream metadata are durable first.
+        return finished
     }
 
     private fun sectionFile(index: Int) = AtomicFile(File(directory, "section-$index.json"))

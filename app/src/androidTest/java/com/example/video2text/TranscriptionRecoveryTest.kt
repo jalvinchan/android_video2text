@@ -34,7 +34,7 @@ class TranscriptionRecoveryTest {
             val root = File(app.noBackupFilesDir, "recovery-test-${UUID.randomUUID()}")
             try {
                 val (store, imported) = imported("boundary.mp4", root)
-                val fixed = imported.copy(options = TranscriptionOptions(language))
+                val fixed = store.extract(imported.copy(options = TranscriptionOptions(language)), ProcessingCancellation()) {} // Legacy full-PCM recovery.
                 store.save(fixed)
                 val cancellation = ProcessingCancellation()
                 try {

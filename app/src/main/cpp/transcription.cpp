@@ -105,6 +105,12 @@ struct Callbacks {
     }
 };
 
+// Owned by one Kotlin run and used serially while the decoder is backpressured.
+struct Session {
+    std::unique_ptr<whisper_context, decltype(&whisper_free)> context{nullptr, whisper_free};
+    std::unique_ptr<whisper_vad_context, decltype(&whisper_vad_free)> vad{nullptr, whisper_vad_free};
+};
+
 class GlobalRef {
     JNIEnv *env;
 public:
@@ -118,7 +124,7 @@ public:
 
 static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring pcmPath,
                        jstring languageCode, jstring modelId, jlong audioOffsetMs, jint threads,
-                       jintArray savedPlan, jint completed, bool checkpointed, jobject callback) {
+                       jintArray savedPlan, jint completed, bool checkpointed, jobject callback, Session *session = nullptr, int coreStart = 0, int coreEnd = -1) {
     try {
         UtfChars model(env, modelPath);
         UtfChars pcm(env, pcmPath);
@@ -134,6 +140,9 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
             throw std::runtime_error("Invalid transcription language or model selection.");
         }
         MappedPcm audio(pcm.chars);
+        if (coreEnd < 0) coreEnd = audio.samples();
+        if (coreStart < 0 || coreEnd <= coreStart || coreEnd > audio.samples())
+            throw std::runtime_error("Invalid audio window boundaries.");
         GlobalRef global(env, callback);
         JavaVM *vm = nullptr;
         env->GetJavaVM(&vm);
@@ -150,14 +159,15 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
 
         auto contextParams = whisper_context_default_params();
         contextParams.use_gpu = false;
-        std::unique_ptr<whisper_context, decltype(&whisper_free)> context(
-            whisper_init_from_file_with_params(model.chars, contextParams), whisper_free);
+        std::unique_ptr<whisper_context, decltype(&whisper_free)> ownedContext(nullptr, whisper_free);
+        if (!session) ownedContext.reset(whisper_init_from_file_with_params(model.chars, contextParams));
+        auto *context = session ? session->context.get() : ownedContext.get();
         if (!context) throw std::runtime_error("Unable to load the offline model. Check free memory and try again.");
         if (callbacks.isCancelled()) return;
 
-        if (!whisper_is_multilingual(context.get())) throw std::runtime_error("The selected model must support multilingual speech.");
+        if (!whisper_is_multilingual(context)) throw std::runtime_error("The selected model must support multilingual speech.");
         const int cantoneseId = whisper_lang_id("yue");
-        const bool hasCantonese = cantoneseId >= 0 && whisper_token_lang(context.get(), cantoneseId) < whisper_token_translate(context.get());
+        const bool hasCantonese = cantoneseId >= 0 && whisper_token_lang(context, cantoneseId) < whisper_token_translate(context);
         if (turbo && !hasCantonese) throw std::runtime_error("The selected model does not support Cantonese. Install Turbo and retry.");
         callbacks.totalSamples = audio.samples();
 
@@ -191,11 +201,11 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
             callbacks.sectionSamples = end - start;
             callbacks.reportProgress(static_cast<int>(static_cast<int64_t>(start) * 100 / audio.samples()));
             if (automatic) {
-                if (whisper_pcm_to_mel(context.get(), audio.data() + start, end - start, params.n_threads) != 0)
+                if (whisper_pcm_to_mel(context, audio.data() + start, end - start, params.n_threads) != 0)
                     throw std::runtime_error("Offline transcription could not prepare a speech section.");
                 if (callbacks.isCancelled()) return;
                 std::vector<float> probabilities(whisper_lang_max_id() + 1, 0.0f);
-                if (whisper_lang_auto_detect(context.get(), 0, params.n_threads, probabilities.data()) < 0)
+                if (whisper_lang_auto_detect(context, 0, params.n_threads, probabilities.data()) < 0)
                     throw std::runtime_error("Offline transcription could not detect the speech language.");
                 if (callbacks.isCancelled()) return;
                 int chosen = whisper_lang_id("en");
@@ -205,14 +215,14 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
                 }
                 params.language = whisper_lang_str(chosen);
             }
-            const int result = whisper_full(context.get(), params, audio.data() + start, end - start);
+            const int result = whisper_full(context, params, audio.data() + start, end - start);
             if (callbacks.failed) throw std::runtime_error("Transcription progress could not be delivered.");
             if (callbacks.isCancelled()) return;
             if (result != 0) throw std::runtime_error("Offline transcription failed. Try a shorter video or free some memory.");
-            const int count = whisper_full_n_segments(context.get());
+            const int count = whisper_full_n_segments(context);
             for (int index = 0; index < count; ++index) {
                 if (callbacks.isCancelled()) return;
-                const char *text = whisper_full_get_segment_text(context.get(), index);
+                const char *text = whisper_full_get_segment_text(context, index);
                 const auto length = static_cast<jsize>(std::strlen(text));
                 jbyteArray utf8 = env->NewByteArray(length);
                 if (!utf8) return;
@@ -220,8 +230,8 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
                 // Whisper times are centiseconds; PCM offsets use 16 kHz. UTF-8 is never converted by JNI.
                 const auto durationMs = static_cast<int64_t>(end - start) * 1000 / WHISPER_SAMPLE_RATE;
                 const auto sectionOffsetMs = static_cast<int64_t>(start) * 1000 / WHISPER_SAMPLE_RATE + audioOffsetMs;
-                const auto t0 = std::clamp(whisper_full_get_segment_t0(context.get(), index) * 10, int64_t{0}, durationMs);
-                const auto t1 = std::clamp(whisper_full_get_segment_t1(context.get(), index) * 10, t0, durationMs);
+                const auto t0 = std::clamp(whisper_full_get_segment_t0(context, index) * 10, int64_t{0}, durationMs);
+                const auto t1 = std::clamp(whisper_full_get_segment_t1(context, index) * 10, t0, durationMs);
                 env->CallVoidMethod(callback, segment, static_cast<jlong>(sectionOffsetMs + t0), static_cast<jlong>(sectionOffsetMs + t1), utf8);
                 env->DeleteLocalRef(utf8);
                 if (env->ExceptionCheck()) return;
@@ -237,16 +247,18 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
             if (env->ExceptionCheck()) return;
         } else if (!automatic) {
             constexpr int window = 30 * WHISPER_SAMPLE_RATE;
-            for (int64_t offset = 0; offset < audio.samples(); offset += window) {
+            for (int64_t offset = coreStart; offset < coreEnd; offset += window) {
                 plan.push_back(static_cast<int>(offset));
-                plan.push_back(static_cast<int>(std::min(offset + window, static_cast<int64_t>(audio.samples()))));
+                plan.push_back(static_cast<int>(std::min(offset + window, static_cast<int64_t>(coreEnd))));
             }
         } else {
             auto vadContextParams = whisper_vad_default_context_params();
             vadContextParams.use_gpu = false;
             vadContextParams.n_threads = params.n_threads;
-            std::unique_ptr<whisper_vad_context, decltype(&whisper_vad_free)> vad(
-                whisper_vad_init_from_file_with_params(vadModel.chars, vadContextParams), whisper_vad_free);
+            std::unique_ptr<whisper_vad_context, decltype(&whisper_vad_free)> ownedVad(nullptr, whisper_vad_free);
+            auto &vadOwner = session ? session->vad : ownedVad;
+            if (!vadOwner) vadOwner.reset(whisper_vad_init_from_file_with_params(vadModel.chars, vadContextParams));
+            auto *vad = vadOwner.get();
             if (!vad) throw std::runtime_error("Unable to load the offline speech detector. Check free memory and retry.");
             auto vadParams = whisper_vad_default_params();
             vadParams.threshold = 0.5f;
@@ -260,22 +272,22 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
             constexpr int halo = WHISPER_SAMPLE_RATE;
             // Detector context on both sides keeps continuous speech intact at the 30-second boundary.
             // Only each window's disjoint core is transcribed; probability storage is bounded to 32 seconds.
-            for (int64_t offset = 0; offset < audio.samples(); offset += window) {
+            for (int64_t offset = coreStart; offset < coreEnd; offset += window) {
                 if (env->ExceptionCheck() || callbacks.isCancelled()) return;
-                const int coreStart = static_cast<int>(offset);
-                const int coreEnd = static_cast<int>(std::min(offset + window, static_cast<int64_t>(audio.samples())));
-                const int scanStart = std::max(0, coreStart - halo);
-                const int scanEnd = static_cast<int>(std::min(static_cast<int64_t>(coreEnd) + halo, static_cast<int64_t>(audio.samples())));
+                const int windowStart = static_cast<int>(offset);
+                const int windowEnd = static_cast<int>(std::min(offset + window, static_cast<int64_t>(coreEnd)));
+                const int scanStart = std::max(0, windowStart - halo);
+                const int scanEnd = static_cast<int>(std::min(static_cast<int64_t>(windowEnd) + halo, static_cast<int64_t>(audio.samples())));
                 std::unique_ptr<whisper_vad_segments, decltype(&whisper_vad_free_segments)> spans(
-                    whisper_vad_segments_from_samples(vad.get(), vadParams, audio.data() + scanStart, scanEnd - scanStart), whisper_vad_free_segments);
+                    whisper_vad_segments_from_samples(vad, vadParams, audio.data() + scanStart, scanEnd - scanStart), whisper_vad_free_segments);
                 if (!spans) throw std::runtime_error("Offline transcription could not find speech boundaries.");
                 if (callbacks.isCancelled()) return;
-                int previousEnd = coreStart;
+                int previousEnd = windowStart;
                 for (int i = 0; i < whisper_vad_segments_n_segments(spans.get()); ++i) {
                     const auto spanStart = static_cast<int64_t>(scanStart) + std::llround(whisper_vad_segments_get_segment_t0(spans.get(), i) * 160.0);
                     const auto spanEnd = static_cast<int64_t>(scanStart) + std::llround(whisper_vad_segments_get_segment_t1(spans.get(), i) * 160.0);
-                    const int start = static_cast<int>(std::clamp<int64_t>(spanStart, previousEnd, coreEnd));
-                    const int end = static_cast<int>(std::clamp<int64_t>(spanEnd, start, coreEnd));
+                    const int start = static_cast<int>(std::clamp<int64_t>(spanStart, previousEnd, windowEnd));
+                    const int end = static_cast<int>(std::clamp<int64_t>(spanEnd, start, windowEnd));
                     if (end > start) { plan.push_back(start); plan.push_back(end); }
                     if (env->ExceptionCheck() || callbacks.isCancelled()) return;
                     previousEnd = end;
@@ -283,9 +295,9 @@ static void transcribe(JNIEnv *env, jstring modelPath, jstring vadPath, jstring 
 
             }
         }
-        int previousEnd = 0;
+        int previousEnd = coreStart;
         for (size_t index = 0; index < plan.size(); index += 2) {
-            if (plan[index] < previousEnd || plan[index + 1] <= plan[index] || plan[index + 1] > audio.samples() ||
+            if (plan[index] < previousEnd || plan[index + 1] <= plan[index] || plan[index + 1] > coreEnd ||
                 plan[index + 1] - plan[index] > 30 * WHISPER_SAMPLE_RATE)
                 throw std::runtime_error("Invalid saved speech section plan.");
             previousEnd = plan[index + 1];
@@ -328,4 +340,37 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_example_video2text_WhisperBridge_transcribeSections(JNIEnv *env, jobject, jstring model, jstring vad, jstring pcm,
     jstring language, jstring modelId, jlong offset, jint threads, jintArray plan, jint completed, jobject callback) {
     transcribe(env, model, vad, pcm, language, modelId, offset, threads, plan, completed, true, callback);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_video2text_WhisperBridge_openSession(JNIEnv *env, jobject, jstring modelPath) {
+    try {
+        UtfChars model(env, modelPath);
+        auto session = std::make_unique<Session>();
+        auto params = whisper_context_default_params();
+        params.use_gpu = false;
+        session->context.reset(whisper_init_from_file_with_params(model.chars, params));
+        if (!session->context) throw std::runtime_error("Unable to load the offline model. Check free memory and try again.");
+        return reinterpret_cast<jlong>(session.release());
+    } catch (const std::exception &error) {
+        if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/io/IOException"), error.what());
+        return 0;
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_video2text_WhisperBridge_closeSession(JNIEnv *, jobject, jlong handle) {
+    delete reinterpret_cast<Session *>(handle);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_video2text_WhisperBridge_transcribeWindow(JNIEnv *env, jobject, jlong handle,
+    jstring model, jstring vad, jstring pcm, jstring language, jstring modelId, jlong offset,
+    jint threads, jint coreStart, jint coreEnd, jintArray plan, jint completed, jobject callback) {
+    if (!handle) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "The transcription session is closed.");
+        return;
+    }
+    transcribe(env, model, vad, pcm, language, modelId, offset, threads, plan, completed, true,
+        callback, reinterpret_cast<Session *>(handle), coreStart, coreEnd);
 }

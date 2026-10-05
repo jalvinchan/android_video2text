@@ -50,6 +50,21 @@ internal interface WhisperCallbacks {
 @Keep
 internal object WhisperBridge {
     init { System.loadLibrary("transcription") }
+    /** A run owns one model/detector session. Calls and close stay on its processing thread. */
+    class Session(private val modelPath: String) : java.io.Closeable {
+        private var handle = openSession(modelPath)
+        fun transcribe(vadPath: String, pcmPath: String, language: String, model: String, offsetMs: Long, threads: Int, coreStart: Int, coreEnd: Int, plan: IntArray?, completed: Int, callbacks: WhisperCallbacks) {
+            check(handle != 0L)
+            transcribeWindow(handle, modelPath, vadPath, pcmPath, language, model, offsetMs, threads, coreStart, coreEnd, plan, completed, callbacks)
+        }
+        override fun close() {
+            if (handle != 0L) closeSession(handle)
+            handle = 0
+        }
+    }
+    private external fun openSession(modelPath: String): Long
+    private external fun closeSession(handle: Long)
+    private external fun transcribeWindow(handle: Long, modelPath: String, vadPath: String, pcmPath: String, language: String, model: String, audioOffsetMs: Long, threads: Int, coreStart: Int, coreEnd: Int, plan: IntArray?, completed: Int, callbacks: WhisperCallbacks)
     external fun transcribeSections(modelPath: String, vadPath: String, pcmPath: String, language: String, model: String, audioOffsetMs: Long, threads: Int, plan: IntArray?, completed: Int, callbacks: WhisperCallbacks)
     external fun transcribe(modelPath: String, vadPath: String, pcmPath: String, language: String, model: String, audioOffsetMs: Long, threads: Int, callbacks: WhisperCallbacks)
 }
