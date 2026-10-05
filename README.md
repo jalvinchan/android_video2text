@@ -84,6 +84,8 @@ saved-file modification date supplies the legacy completion date when available.
 
 ## Build and tests
 
+No model weights are needed to build. Users download models inside the installed app.
+
 Use Android Studio's JDK 25 and the Android SDK matching `compileSdk`, with NDK
 `27.2.12479018` and CMake `3.22.1`.
 
@@ -232,3 +234,11 @@ physical phones remain unverified. The physical-phone benchmark was not resumed.
 Rapid switching within a phrase, noisy speech, long-media resource use, API 24/34
 service behavior, and hardware codec differences require broader device testing
 before release.
+
+## License
+
+Application code is available under the [MIT License](LICENSE).
+Vendored libraries and model weights retain their respective licenses; see
+[third-party notices](app/src/main/assets/THIRD_PARTY_NOTICES.txt).
+Test recordings have separate terms and attribution in
+[fixture licenses](app/src/androidTest/assets/FIXTURE_LICENSES.txt).
