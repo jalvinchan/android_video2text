@@ -334,7 +334,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             if (state.isActive) {
                 Card(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(state.pendingJob), style = MaterialTheme.typography.titleMedium)
+                        Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(), style = MaterialTheme.typography.titleMedium)
                         val percent = state.percent
                         if (percent == null || state.cancelling) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else {

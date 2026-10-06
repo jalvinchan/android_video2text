@@ -18,8 +18,9 @@ in the private copy and checks that Android can configure a decoder for the firs
 audio track; filenames and Share MIME types do not determine validity. Files with
 no audio track are rejected. WAV and compressed formats such as MP3, M4A and AAC
 use the same streaming decode and mono 16 kHz PCM conversion, subject to device
-codec support. Audio-only sources show **Preparing audio**; videos show
-**Extracting audio**. Full sample validation and silence checks happen at Start.
+codec support. Audio extraction and speech recognition share the
+**Transcribing speech** status in the screen and notification. Full sample
+validation and silence checks happen at Start.
 Existing video jobs and saved transcripts remain readable.
 
 Processing controls reflect what can be retained: **Cancel import** discards an

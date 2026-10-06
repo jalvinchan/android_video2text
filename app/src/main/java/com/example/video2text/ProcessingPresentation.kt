@@ -29,11 +29,10 @@ internal fun TranscriptionJob.resumeExplanation(): String = when {
     else -> "All speech sections are saved. Resume finishes saving the result without repeating transcription."
 }
 
-internal fun ProcessingStage.label(job: TranscriptionJob? = null): String = when (this) {
+internal fun ProcessingStage.label(): String = when (this) {
     ProcessingStage.IDLE -> "Ready to import"
     ProcessingStage.PREPARING -> "Preparing media or offline model"
-    ProcessingStage.EXTRACTING -> if (job?.sourceHasVideo == false) "Preparing audio" else "Extracting audio"
-    ProcessingStage.TRANSCRIBING -> "Transcribing speech"
+    ProcessingStage.EXTRACTING, ProcessingStage.TRANSCRIBING -> "Transcribing speech"
     ProcessingStage.COMPLETED -> "Transcription complete"
     ProcessingStage.CANCELLED -> "Processing stopped"
     ProcessingStage.FAILED -> "Unable to finish transcription"

@@ -184,7 +184,7 @@ class TranscriptionService : Service() {
         val cancel = PendingIntent.getService(this, 1, Intent(this, TranscriptionService::class.java).setAction(CANCEL), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val state = repository.state.value
         val cancelling = state.cancelling
-        val status = if (cancelling) state.stoppingLabel() else stage.label(state.pendingJob)
+        val status = if (cancelling) state.stoppingLabel() else stage.label()
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_transcription)
             .setContentTitle("Video to text")
