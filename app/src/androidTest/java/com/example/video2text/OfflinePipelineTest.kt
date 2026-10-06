@@ -141,8 +141,12 @@ class OfflinePipelineTest {
             withTimeout(30_000) { repository.state.first { it.stage == ProcessingStage.CANCELLED } }
             assertEquals(original, repository.state.value.transcript)
             assertEquals(original, TranscriptStore(app.noBackupFilesDir).load())
-            assertTrue(repository.state.value.pendingJob!!.hasAudio)
-            assertTrue(repository.jobs.audio.exists())
+            val paused = repository.state.value.pendingJob!!
+            assertTrue(paused.progressive)
+            assertNotNull(paused.window)
+            assertTrue(repository.jobs.source.exists())
+            assertTrue(repository.jobs.windowAudio.length() in 1..((PCM_WINDOW + 2 * PCM_HALO) * 4L))
+            assertFalse(repository.jobs.audio.exists())
             withContext(Dispatchers.IO) { repository.discardJob() }
         }
         app.models.selectLanguage(SpeechLanguage.AUTO)

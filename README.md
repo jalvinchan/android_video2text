@@ -238,11 +238,16 @@ history ID so rotation and exports keep the opened result.
 
 ## Verification limits
 
+See [Progress and feature backlog](docs/PROGRESS_AND_NEXT_STEPS.md) for possible
+features to add, their recommended order, and outstanding verification work.
+
 Emulator verification covers builds for both ABIs, unit tests, lint, native
 fixtures, persistence/exports, download policy and recovery, and atomic model
-installation. Audio-import, progressive-pipeline and transcript-history regression tests have
-been compiled but not run. Progressive recovery, codec backpressure on devices and audio-only codec
-behavior remain unverified; no speed improvement has been measured. See
+installation. Current audio-import, progressive-pipeline, transcript-history,
+UI/export and legacy-recovery checks passed on the ARM64 API 37 emulator, along
+with explicit process-death phases and processing Pause/Resume UI checks.
+MP3/raw AAC inputs, physical-device codec backpressure and the transient import
+cancellation UI remain unverified; no speed improvement has been measured. See
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.
 
 Cantonese accuracy beyond the included fixture and larger-model performance on
