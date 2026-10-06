@@ -35,8 +35,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -46,6 +49,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +59,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -116,7 +121,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -145,7 +150,8 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             else -> TranscriptionPage.IMPORT
         })
     }
-    BackHandler(enabled = page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING, onBack = back)
+    val canGoBack = page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING
+    BackHandler(enabled = canGoBack, onBack = back)
     LaunchedEffect(state.stage, state.history.firstOrNull()?.id) {
         when (state.stage) {
             ProcessingStage.COMPLETED -> viewModel.showCompletedResult()
@@ -195,7 +201,27 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             matches.forEach { addStyle(SpanStyle(background = highlight, color = highlightText), it.first, it.last + 1) }
         }
     }
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(when (page) {
+                    TranscriptionPage.IMPORT -> "Video to text"
+                    TranscriptionPage.LANGUAGE -> "Select language"
+                    TranscriptionPage.MODEL -> "Select model"
+                    TranscriptionPage.PROCESSING -> "Processing"
+                    TranscriptionPage.RESULT -> "Result"
+                    TranscriptionPage.MODELS -> "Models"
+                    TranscriptionPage.HISTORY -> "Transcript history"
+                }) },
+                navigationIcon = {
+                    if (canGoBack) IconButton(onClick = back) {
+                        Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Back")
+                    }
+                },
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { padding ->
         if (page == TranscriptionPage.HISTORY) {
             val entries = remember(state.history, historySearch) {
                 state.history.filter { entry ->
@@ -208,9 +234,6 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Video to text", style = MaterialTheme.typography.headlineMedium)
-                        Text("Transcript history", style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = back) { Text("Back") }
                         state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
                         OutlinedTextField(value = historySearch, onValueChange = { historySearch = it },
                             label = { Text("Search history") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -233,20 +256,10 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 item { TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses") } }
             }
         } else Column(Modifier.fillMaxSize().padding(padding).verticalScroll(pageScroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Video to text", style = MaterialTheme.typography.headlineMedium)
-            Text(when (page) {
-                TranscriptionPage.IMPORT -> "Import audio or video"
-                TranscriptionPage.LANGUAGE -> "Select language"
-                TranscriptionPage.MODEL -> "Select model"
-                TranscriptionPage.PROCESSING -> "Processing"
-                TranscriptionPage.RESULT -> "Result"
-                TranscriptionPage.MODELS -> "Models"
-                TranscriptionPage.HISTORY -> "Transcript history"
-            }, style = MaterialTheme.typography.titleLarge)
-            if (page != TranscriptionPage.IMPORT && page != TranscriptionPage.PROCESSING) TextButton(onClick = back) { Text("Back") }
             state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
             if (page == TranscriptionPage.IMPORT) {
                 Text("Import audio or video, choose its language and model, then start offline transcription.")
+                if (models.loaded && models.installed.isEmpty()) Text("Download a model from Manage models before your first transcription. After installation, transcription works offline.")
                 val pending = state.pendingJob
                 if (pending != null) {
                     Card(Modifier.fillMaxWidth()) {

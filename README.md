@@ -51,9 +51,11 @@ one phrase remain a recognition limitation.
 | Large v3 Turbo q5 | Download after install | 547 MiB | Cantonese, English, and Mandarin |
 | Silero v5.1.2 detector | Shared first-download helper | 0.84 MiB | Speech boundaries for Auto |
 
-The APK contains no model weights. Download a speech model after installation;
-the shared detector downloads with the first model if needed. Transcription
-requires both files to be verified and installed and then works offline.
+The APK contains no model weights. Before the first transcription, download Base,
+Small, or Turbo from the model selection or Models page. The shared detector
+downloads automatically as part of that explicit request if missing. Start stays
+disabled until both files are verified and installed. Existing verified private
+models from earlier app versions are reused.
 
 The Models page provides status, progress, Cancel, Retry, and Delete. Downloads
 start only after the user requests them, use Wi-Fi by default, and offer an
@@ -61,7 +63,9 @@ explicit mobile-data choice for each request. Roaming is disabled. Downloading a
 model does not select it. One download may run at a time, independently of the app
 process, through Android DownloadManager. Transcription can use an installed
 model while a download runs. A model in use cannot be deleted. Deleting a selected
-model resets the saved model default to Base. Base must also be downloaded before use. A Cantonese setup still
+model resets the saved model default to Base; Base must also be installed before
+starting. Base can be deleted and downloaded again. The small shared detector
+remains cached for other models. A Cantonese setup still
 requires selecting installed Turbo; a saved Turbo job requires downloading Turbo
 again to resume unfinished inference.
 Internet is used only for requested downloads. Installed models run in airplane
@@ -84,7 +88,8 @@ saved-file modification date supplies the legacy completion date when available.
 
 ## Build and tests
 
-No model weights are needed to build. Users download models inside the installed app.
+No model weights are needed to build. Users download models
+inside the installed app.
 
 Use Android Studio's JDK 25 and the Android SDK matching `compileSdk`, with NDK
 `27.2.12479018` and CMake `3.22.1`.
@@ -104,10 +109,17 @@ Optional-model native and deletion tests use verified files supplied to the test
 harness, and skip with an explanation if those large files are absent. They are
 never bundled into production or test APKs. Before running them, install the debug
 APK, create `/sdcard/Android/data/com.example.video2text/files/verification`, and
-push `ggml-small.bin` and `ggml-large-v3-turbo-q5_0.bin` there. Use the pinned URLs
-and checksums below. The native tests verify those hashes again before loading.
+push `ggml-base.bin`, `ggml-silero-v5.1.2.bin`, `ggml-small.bin`, and
+`ggml-large-v3-turbo-q5_0.bin` there. The Base and detector fixtures exercise
+first-download recovery, reuse, corruption, and deletion in isolated storage.
+Ensure the fixture directory is readable by the app (ADB-created directories may
+need their permissions adjusted). Use the pinned URLs and checksums below. The native tests verify those hashes again before loading.
 
-`ModelDownloadIntegrationTest` has explicit `modelDownloadPhase=start` and
+`ModelDownloadIntegrationTest.freshBaseAndDetectorDownloadAndAcquire` runs with
+`modelDownloadPhase=base` and downloads/verifies Base and the detector into fresh
+isolated storage. It skips unless explicitly requested.
+
+`ModelDownloadIntegrationTest` also has explicit `modelDownloadPhase=start` and
 `modelDownloadPhase=resume` instrumentation arguments. On an emulator without
 Small installed, enable Wi-Fi, run `startSmallDownload`, terminate the target
 process, then run `reopeningInstallsVerifiedDownloadAndDoesNotSelectIt` with the
@@ -143,8 +155,12 @@ The detector comes from `https://huggingface.co/ggml-org/whisper-vad/resolve/9ff
 download IDs, progress, and model-use protection. Models live in
 `noBackupFilesDir/models`. Transfers stage in app-specific external
 storage, then stream through size/SHA-256 verification into an atomic private
-file. Only verified files are selectable. Startup checks installed models and the shared detector and reconciles persisted DownloadManager IDs; foreground entry also
-reconciles. Verification interrupted by process death retries on reopening.
+file. Only verified files are selectable. Startup checks installed speech models
+and the shared detector and reconciles persisted DownloadManager IDs; foreground
+entry also reconciles. Each request persists the active speech/detector transfer and advances
+to the next missing file after verification. Reopening continues an interrupted
+request, and retries reuse already verified files. Verification interrupted by
+process death retries on reopening.
 Corruption, cancellation, network errors, inaccessible staging, unavailable
 DownloadManager, and insufficient storage produce recoverable errors. Failed
 installation preserves any previous installed file and transcript.

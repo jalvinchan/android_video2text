@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -71,7 +72,7 @@ class TranscriptUiTest {
         compose.onNodeWithText("Delete saved transcript?").assertExists()
         compose.onNodeWithText("Delete").performClick()
         compose.waitUntil(5_000) { (compose.activity.application as TranscriptionApplication).repository.state.value.transcript == null }
-        compose.onNodeWithText("Back").performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onAllNodesWithText("Import audio or video")[0].assertExists()
     }
 
@@ -138,13 +139,46 @@ class TranscriptUiTest {
         compose.onNodeWithText("Base · Installed").assertDoesNotExist()
         compose.onNodeWithText("Manage models").performScrollTo().performClick()
         compose.activityRule.scenario.recreate()
-        compose.onNodeWithText("Back").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Turbo is required for Cantonese.").assertExists()
-        compose.onNodeWithText("Back").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Cantonese").assertIsSelected()
         org.junit.Assert.assertNull(app.repository.state.value.pendingJob!!.options)
         org.junit.Assert.assertFalse(app.repository.jobs.audio.exists())
         runBlocking(Dispatchers.IO) { app.repository.discardJob() }
         file.parentFile!!.deleteRecursively()
+    }
+
+    @Test fun firstUseOffersBaseDownloadAndBlocksTranscription() {
+        val app = compose.activity.application as TranscriptionApplication
+        runBlocking { app.models.ready.await() }
+        org.junit.Assume.assumeTrue("Run with no installed models to check first use", app.models.state.value.installed.isEmpty())
+        compose.onNodeWithText("Transcribe another file").performScrollTo().performClick()
+        compose.onNodeWithText("Download a model from Manage models before your first transcription. After installation, transcription works offline.").assertExists()
+        compose.onNodeWithText("Manage models").performScrollTo().performClick()
+        compose.onNodeWithText("Download Base").performScrollTo().performClick()
+        compose.onNodeWithText("Download Base?").assertExists()
+        compose.onNodeWithText("Allow mobile data for this download").assertIsOff()
+        compose.onNodeWithText("Cancel").performClick()
+        org.junit.Assert.assertNull(app.models.state.value.download)
+        compose.onNodeWithContentDescription("Back").performClick()
+        val file = java.io.File(app.cacheDir, "exports/first-use/speech.mp4").apply { parentFile!!.mkdirs() }
+        try {
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets.open("speech.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
+            val uri = androidx.core.content.FileProvider.getUriForFile(app, "${app.packageName}.exports", file)
+            compose.runOnUiThread { androidx.lifecycle.ViewModelProvider(compose.activity)[TranscriptionViewModel::class.java].importMedia(uri) }
+            compose.waitUntil(10000) { app.repository.state.value.pendingJob != null && !app.repository.state.value.isActive }
+            compose.onNodeWithText("English").performScrollTo().performClick()
+            compose.onNodeWithText("Continue to models").performScrollTo().performClick()
+            compose.onNodeWithText("Base · Download").assertExists()
+            compose.onNodeWithText("Start transcription").assertIsNotEnabled()
+            compose.onNodeWithText("Base · Download").performClick()
+            compose.onNodeWithText("Download Base?").assertExists()
+            compose.onNodeWithText("Cancel").performClick()
+            org.junit.Assert.assertNull(app.repository.state.value.pendingJob!!.options)
+        } finally {
+            runBlocking(Dispatchers.IO) { app.repository.discardJob() }
+            file.parentFile!!.deleteRecursively()
+        }
     }
 }
