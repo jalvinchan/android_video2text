@@ -33,7 +33,7 @@ class TranscriptionProcessRecoveryTest {
                 source.parentFile!!.deleteRecursively()
                 val job = repository.startJob(repository.state.value.pendingJob!!.id, TranscriptionOptions(SpeechLanguage.MANDARIN))
                 if (phase == "committed") {
-                    TranscriptStore(app.noBackupFilesDir).save(Transcript(job.sourceName, previous.segments, job.id), ProcessingCancellation())
+                    TranscriptStore.forApp(app).save(Transcript(job.sourceName, previous.segments, job.id), ProcessingCancellation())
                     // Deliberately leave durable media and active marker as if killed at commit boundary.
                 } else {
                     val token = ProcessingCancellation()
@@ -46,7 +46,7 @@ class TranscriptionProcessRecoveryTest {
                     } catch (_: CancellationException) { }
                     assertEquals(1, repository.jobs.load()!!.completedSections)
                 }
-                assertTrue(TranscriptStore(app.noBackupFilesDir).wasInterrupted())
+                assertTrue(TranscriptStore.forApp(app).wasInterrupted())
             }
             "resume" -> {
                 val saved = repository.state.value.pendingJob!!

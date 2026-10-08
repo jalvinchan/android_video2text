@@ -99,4 +99,95 @@ class TranscriptHistoryTest {
         assertFalse(jobs.directory.exists())
         assertEquals(2, store.loadHistory().size)
     }
+
+    @Test fun backupMigrationPreservesRecordsAndKeepsActivityDeviceLocal() = withStore { local, old ->
+        old.save(transcript("first.wav", "job-one"), ProcessingCancellation())
+        val saved = old.save(transcript("second.wav", "job-two"), ProcessingCancellation())
+        old.markActive()
+        val destination = File(local, "backup-eligible")
+        val migrated = TranscriptStore(destination, local)
+        assertEquals(saved, migrated.loadHistory())
+        assertFalse(File(local, "transcript-history.json").exists())
+        assertTrue(File(destination, "transcript-history.json").isFile)
+        assertTrue(migrated.wasInterrupted())
+        assertFalse(File(destination, "transcription-active").exists())
+
+        // Simulate restoring only the allowed file to another installation.
+        val restored = File(local, "restored").apply { mkdirs() }
+        File(destination, "transcript-history.json").copyTo(File(restored, "transcript-history.json"))
+        val newLocal = File(local, "new-phone-local").apply { mkdirs() }
+        val reopened = TranscriptStore(restored, newLocal)
+        assertEquals(saved, reopened.loadHistory())
+        assertFalse(reopened.wasInterrupted())
+        reopened.delete(saved.first().id)
+        assertEquals(listOf(saved.last()), reopened.loadHistory())
+    }
+
+    @Test fun failedBackupMigrationKeepsSourceAndCanRetry() = withStore { local, old ->
+        val saved = old.save(transcript("keep.wav", "keep-job"), ProcessingCancellation())
+        val original = File(local, "transcript-history.json").readBytes()
+        val destination = File(local, "backup-eligible").apply { mkdirs() }
+        val blocked = File(destination, "transcript-history.json.new").apply { mkdirs() }
+        File(blocked, "blocker").writeText("Prevent migration commit")
+        try {
+            TranscriptStore(destination, local).loadHistory()
+            fail("Migration failure was ignored")
+        } catch (_: java.io.IOException) { }
+        assertArrayEquals(original, File(local, "transcript-history.json").readBytes())
+        blocked.deleteRecursively()
+        assertEquals(saved, TranscriptStore(destination, local).loadHistory())
+        assertFalse(File(local, "transcript-history.json").exists())
+    }
+
+    @Test fun backupMigrationRetriesAfterCommitAndPreservesRestoredHistory() = withStore { local, old ->
+        val previous = old.save(transcript("old.wav", "old-job"), ProcessingCancellation())
+        val destination = File(local, "backup-eligible").apply { mkdirs() }
+        File(local, "transcript-history.json").copyTo(File(destination, "transcript-history.json"))
+        // Crash after destination commit but before source cleanup, followed by restore.
+        val restored = TranscriptStore(destination)
+        val combined = restored.save(transcript("restored.wav", "restored-job"), ProcessingCancellation())
+        assertEquals(combined, TranscriptStore(destination, local).loadHistory())
+        assertFalse(File(local, "transcript-history.json").exists())
+        assertEquals(2, combined.size)
+        assertEquals(previous.single(), combined.last())
+        val migrated = TranscriptStore(destination, local)
+        combined.forEach { migrated.delete(it.id) }
+        assertTrue(TranscriptStore(destination, local).loadHistory().isEmpty())
+    }
+
+    @Test fun corruptOrConflictingMigrationKeepsBothHistories() = withStore { local, old ->
+        old.save(transcript("old.wav", "same-job"), ProcessingCancellation())
+        val original = File(local, "transcript-history.json").readBytes()
+        val destination = File(local, "backup-eligible").apply { mkdirs() }
+        val restored = TranscriptStore(destination)
+        val saved = restored.save(transcript("different.wav", "same-job"), ProcessingCancellation())
+        try {
+            TranscriptStore(destination, local).loadHistory()
+            fail("Conflicting completed jobs accepted")
+        } catch (_: IllegalArgumentException) { }
+        assertArrayEquals(original, File(local, "transcript-history.json").readBytes())
+        assertEquals(saved, restored.loadHistory())
+        File(local, "transcript-history.json").writeText("broken")
+        try {
+            TranscriptStore(destination, local).loadHistory()
+            fail("Corrupt migration source discarded")
+        } catch (_: org.json.JSONException) { }
+        assertEquals("broken", File(local, "transcript-history.json").readText())
+        assertEquals(saved, restored.loadHistory())
+    }
+
+    @Test fun originalSingleResultMigratesDirectlyToBackupFolder() = withStore { local, _ ->
+        val original = transcript("legacy.mp4", "legacy-job")
+        val legacy = File(local, "latest-transcript.json")
+        legacy.writeText(JSONObject().put("version", 1).put("sourceName", original.sourceName)
+            .put("jobId", original.jobId).put("segments", org.json.JSONArray().put(JSONObject()
+                .put("startMs", 123).put("endMs", 456).put("text", original.segments.single().text))).toString())
+        val savedAt = legacy.lastModified()
+        val destination = File(local, "backup-eligible")
+        val saved = TranscriptStore(destination, local).loadHistory().single()
+        assertEquals(original, saved.transcript)
+        assertEquals(savedAt, saved.completedAtMs)
+        assertFalse(legacy.exists())
+        assertEquals(listOf(saved), TranscriptStore(destination, local).loadHistory())
+    }
 }

@@ -131,14 +131,14 @@ class TranscriptionRecoveryTest {
             catch (_: IllegalArgumentException) { }
             assertEquals(previous, repository.state.value.transcript)
             withContext(Dispatchers.IO) { repository.discardJob() }
-            assertEquals(previous, TranscriptStore(app.noBackupFilesDir).load())
+            assertEquals(previous, TranscriptStore.forApp(app).load())
             withContext(Dispatchers.IO) { repository.importMedia(uri, ProcessingCancellation()) }
             val next = repository.state.value.pendingJob!!
             val result = Transcript(next.sourceName, listOf(TranscriptSegment(0, 1000, "New result")), next.id)
             withContext(Dispatchers.IO) { repository.complete(result, ProcessingCancellation()) }
             assertNull(repository.state.value.pendingJob)
             assertFalse(repository.jobs.directory.exists())
-            assertEquals(result, TranscriptStore(app.noBackupFilesDir).load())
+            assertEquals(result, TranscriptStore.forApp(app).load())
         } finally {
             withContext(Dispatchers.IO) { repository.discardJob() }
             source.parentFile!!.deleteRecursively()

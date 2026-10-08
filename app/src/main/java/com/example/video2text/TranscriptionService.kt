@@ -33,6 +33,7 @@ class TranscriptionService : Service() {
     private var cancellation: ProcessingCancellation? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var timeoutMessage: String? = null
+    private var pauseMessage: String? = null
     private var lastNotification = 0L
     private var lastStage: ProcessingStage? = null
 
@@ -93,17 +94,25 @@ class TranscriptionService : Service() {
         val token = ProcessingCancellation()
         cancellation = token
         timeoutMessage = null
+        pauseMessage = null
+        val app = application as TranscriptionApplication
+        val access = app.monetization.state.value.access
         job = scope.launch {
+            val foregroundMonitor = launch {
+                access.monitorForeground(app.foreground.state) {
+                    requestCancel(TranscriptionAccess.BACKGROUND_PAUSE_MESSAGE)
+                }
+            }
             try {
                 repository.ready.await()
                 withContext(Dispatchers.IO) {
                     (application as TranscriptionApplication).models.ready.await()
-                    val savedJob = repository.startJob(jobId, options)
+                    val savedJob = repository.startJob(jobId, options, access)
                     require(!savedJob.needsModel || options.model in (application as TranscriptionApplication).models.state.value.installed) { "Download and install ${options.model.label} before starting." }
                     token.check()
                     wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
                         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "video2text:transcription").apply { acquire() }
-                    val transcript = OfflineTranscriber(this@TranscriptionService).resume(savedJob, repository.jobs, token, { stage, percent ->
+                    val transcript = OfflineTranscriber(this@TranscriptionService, access).resume(savedJob, repository.jobs, token, { stage, percent ->
                         repository.progress(stage, percent)
                         updateNotification(stage, percent)
                     }, repository::jobUpdated)
@@ -114,13 +123,13 @@ class TranscriptionService : Service() {
                 withContext(NonCancellable + Dispatchers.IO) {
                     if (!token.isCommitted()) {
                         repository.finish(if (timeoutMessage == null) ProcessingStage.CANCELLED else ProcessingStage.FAILED,
-                            timeoutMessage ?: STOPPED_MESSAGE)
+                            timeoutMessage ?: pauseMessage ?: STOPPED_MESSAGE)
                     }
                 }
             } catch (error: Exception) {
                 withContext(NonCancellable + Dispatchers.IO) {
                     repository.finish(if (token.isCancelled() && timeoutMessage == null) ProcessingStage.CANCELLED else ProcessingStage.FAILED,
-                        timeoutMessage ?: if (token.isCancelled()) STOPPED_MESSAGE else failureMessage(error))
+                        timeoutMessage ?: if (token.isCancelled()) pauseMessage ?: STOPPED_MESSAGE else failureMessage(error))
                 }
             } catch (_: OutOfMemoryError) {
                 withContext(NonCancellable + Dispatchers.IO) {
@@ -131,6 +140,7 @@ class TranscriptionService : Service() {
                     repository.finish(ProcessingStage.FAILED, "The offline engine could not load. Reinstall this app for an ARM64 or x86_64 device.")
                 }
             } finally {
+                foregroundMonitor.cancel()
                 withContext(NonCancellable + Dispatchers.IO) {
                     releaseWakeLock()
                 }
@@ -143,8 +153,9 @@ class TranscriptionService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun requestCancel() {
+    private fun requestCancel(message: String? = null) {
         if (cancellation?.cancel() == true) {
+            pauseMessage = message
             repository.cancelling()
             updateNotification(repository.state.value.stage, repository.state.value.percent, force = true)
         }
@@ -189,7 +200,7 @@ class TranscriptionService : Service() {
             .setSmallIcon(R.drawable.ic_transcription)
             .setContentTitle("Video to text")
             .setContentText(status)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(if (state.isActive) "$status\n${state.stopExplanation()}" else status))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (state.isActive) "$status\n${state.workVisibilityExplanation()}\n${state.stopExplanation()}" else status))
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

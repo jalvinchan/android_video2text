@@ -26,6 +26,7 @@ data class TranscriptionState(
     internal val pendingJob: TranscriptionJob? = null,
     val retainedBytes: Long = 0,
     val activeOptions: TranscriptionOptions? = null,
+    internal val activeBackgroundAllowed: Boolean = true,
 ) {
     val isActive: Boolean get() = stage in listOf(ProcessingStage.PREPARING, ProcessingStage.EXTRACTING, ProcessingStage.TRANSCRIBING)
 }
@@ -35,9 +36,16 @@ class TranscriptionApplication : Application() {
         private set
     internal lateinit var models: ModelRepository
         private set
+    internal lateinit var monetization: MonetizationRepository
+        private set
+    internal val ads = FreePlanAds()
+    internal lateinit var foreground: ForegroundVisibility
+        private set
     override fun onCreate() {
         super.onCreate()
+        foreground = ForegroundVisibility(this)
         models = ModelRepository(this)
+        monetization = MonetizationRepository(this)
         repository = TranscriptionRepository(this)
     }
 }
@@ -47,7 +55,7 @@ internal class TranscriptionRepository(private val app: Application) {
     private val mutable = MutableStateFlow(TranscriptionState())
     val state = mutable.asStateFlow()
     val ready = CompletableDeferred<Unit>()
-    private val store = TranscriptStore(app.noBackupFilesDir)
+    private val store = TranscriptStore.forApp(app)
     private val storage = Mutex()
     val workDirectory = File(app.cacheDir, "transcription") // Legacy cache cleanup only.
     val jobs = TranscriptionJobStore(app.noBackupFilesDir)
@@ -95,16 +103,18 @@ internal class TranscriptionRepository(private val app: Application) {
         mutable.update { it.copy(stage = ProcessingStage.IDLE, pendingJob = pending, retainedBytes = jobs.storageBytes(), activeOptions = null, percent = null) }
     }
 
-    suspend fun startJob(id: String, options: TranscriptionOptions?): TranscriptionJob = storage.withLock {
+    suspend fun startJob(id: String, options: TranscriptionOptions?, access: TranscriptionAccess =
+        (app as TranscriptionApplication).monetization.state.value.access): TranscriptionJob = storage.withLock {
         check(!state.value.isActive) { "A transcription is already running." }
         val pending = jobs.load() ?: throw ProcessingException("Import an audio or video file first.")
         require(pending.id == id) { "The selected job has changed. Reopen it and try again." }
+        if (pending.needsModel) access.checkDuration(pending.sourceDurationMs)
         val fixed = pending.options ?: requireNotNull(options).also { it.validate() }
         require(options == null || pending.options == null || options == pending.options) { "Resume uses the original settings. Discard this job to change them." }
         val job = pending.copy(options = fixed)
         jobs.save(job)
         store.markActive()
-        begin(fixed)
+        begin(fixed, access)
         jobUpdated(job)
         job
     }
@@ -120,7 +130,7 @@ internal class TranscriptionRepository(private val app: Application) {
         mutable.update { it.copy(pendingJob = null, retainedBytes = 0, stage = ProcessingStage.IDLE, message = null, activeOptions = null) }
     }
 
-    fun begin(options: TranscriptionOptions? = null) { mutable.update { it.copy(activeOptions = options, stage = ProcessingStage.PREPARING, percent = null, cancelling = false, message = null) } }
+    fun begin(options: TranscriptionOptions? = null, access: TranscriptionAccess? = null) { mutable.update { it.copy(activeOptions = options, activeBackgroundAllowed = access?.backgroundAllowed ?: true, stage = ProcessingStage.PREPARING, percent = null, cancelling = false, message = null) } }
     fun progress(stage: ProcessingStage, percent: Int?) {
         mutable.update { it.copy(stage = stage, percent = percent?.coerceIn(0, 100)) }
     }

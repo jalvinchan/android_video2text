@@ -71,6 +71,7 @@ class TranscriptionViewModel(application: Application, private val savedState: S
     private val selectedFormat = MutableStateFlow(TranscriptFormat.PLAIN_TEXT)
     val format = selectedFormat.asStateFlow()
     private val eventChannel = Channel<UiEvent>(Channel.BUFFERED)
+    internal val pro = app.monetization.state
     internal val events = eventChannel.receiveAsFlow()
     private var pendingSave: Pair<String, String>? = null
 

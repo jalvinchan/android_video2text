@@ -85,7 +85,7 @@ class ModelDownloadIntegrationTest {
         assertEquals(SpeechModel.BASE, app.models.state.value.options.model)
         app.repository.ready.await()
         assertEquals(original, app.repository.state.value.transcript)
-        assertEquals(original, TranscriptStore(app.noBackupFilesDir).load())
+        assertEquals(original, TranscriptStore.forApp(app).load())
         assertEquals(-1, app.getSharedPreferences("models", Context.MODE_PRIVATE).getLong("downloadId", -1))
     }
     @Test fun networkFailureLeavesModelsSettingsAndTranscriptIntact(): Unit = runBlocking {

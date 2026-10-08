@@ -1,13 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
--->
+<?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- Only committed history, including AtomicFile's recovery copy on older Android.
+         Android 9+ requires client-side encryption for cloud backup, or direct transfer.
+         Android 7/8 ignore requireFlags; their system backup protection applies. -->
+    <include domain="file" path="transcripts/transcript-history.json"
+        requireFlags="clientSideEncryption|deviceToDeviceTransfer" />
+    <include domain="file" path="transcripts/transcript-history.json.bak"
+        requireFlags="clientSideEncryption|deviceToDeviceTransfer" />
 </full-backup-content>

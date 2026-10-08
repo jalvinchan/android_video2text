@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::viewModel.isInitialized) viewModel.refreshModels()
+        (application as TranscriptionApplication).monetization.refresh()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -125,6 +126,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val pro by viewModel.pro.collectAsStateWithLifecycle()
+    var showPro by rememberSaveable { mutableStateOf(false) }
     val format by viewModel.format.collectAsStateWithLifecycle()
     val models by viewModel.models.collectAsStateWithLifecycle()
     val selectedPage by viewModel.page.collectAsStateWithLifecycle()
@@ -163,6 +166,13 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     var mobileData by remember { mutableStateOf(false) }
     var deleteModel by remember { mutableStateOf<SpeechModel?>(null) }
     val context = LocalContext.current
+    val application = context.applicationContext as TranscriptionApplication
+    val activity = context as? android.app.Activity
+    val ads by application.ads.state.collectAsStateWithLifecycle()
+    LaunchedEffect(pro.enabled, pro.checked, pro.isPro, state.isActive) {
+        if (pro.enabled && pro.checked && !pro.isPro && !state.isActive && activity != null)
+            application.ads.updateConsent(activity)
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbar = remember { SnackbarHostState() }
     var search by rememberSaveable(selectedTranscriptId) { mutableStateOf("") }
@@ -204,6 +214,9 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
     Scaffold(
         topBar = {
             TopAppBar(
+                actions = {
+                    if (!state.isActive) TextButton(onClick = { showPro = true }) { Text(if (pro.isPro) "Pro active" else "Pro") }
+                },
                 title = { Text(when (page) {
                     TranscriptionPage.IMPORT -> "Video to text"
                     TranscriptionPage.LANGUAGE -> "Select language"
@@ -221,6 +234,10 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            if (pro.enabled && pro.checked && !pro.isPro && ads.canRequest && !state.isActive &&
+                page in listOf(TranscriptionPage.IMPORT, TranscriptionPage.HISTORY, TranscriptionPage.RESULT)) FreePlanBanner()
+        },
     ) { padding ->
         if (page == TranscriptionPage.HISTORY) {
             val entries = remember(state.history, historySearch) {
@@ -237,7 +254,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                         state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
                         OutlinedTextField(value = historySearch, onValueChange = { historySearch = it },
                             label = { Text("Search history") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Text("Saved locally. Clearing app data or uninstalling removes history. Save text files elsewhere to keep exported copies.", style = MaterialTheme.typography.bodySmall)
+                        Text("Saved on this phone. Android can back up completed transcripts to your backup account and transfer them to a new phone, depending on your system settings. Recordings, models and unfinished jobs are excluded. Backup is not immediate; save text files elsewhere for an additional copy.", style = MaterialTheme.typography.bodySmall)
                         if (entries.isEmpty()) Text(if (state.history.isEmpty()) "No saved transcripts yet." else "No matching transcripts.")
                     }
                 }
@@ -259,6 +276,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             state.message?.let { Text(it, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp)) }
             if (page == TranscriptionPage.IMPORT) {
                 Text("Import audio or video, choose its language and model, then start offline transcription.")
+                if (pro.enabled && !pro.isPro) Text("Free plan: recordings up to 5 minutes. Keep the app visible and the phone unlocked while transcribing. Pro removes ads and the length limit, and allows background transcription.", style = MaterialTheme.typography.bodySmall)
                 if (models.loaded && models.installed.isEmpty()) Text("Download a model from Manage models before your first transcription. After installation, transcription works offline.")
                 val pending = state.pendingJob
                 if (pending != null) {
@@ -342,7 +360,7 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                             Text("$percent%")
                         }
                         state.activeOptions?.let { Text("Active settings: ${it.label}") }
-                        Text(if (state.activeOptions == null) "Importing media. Keep this app open until the copy is saved." else "Processing continues with the screen locked. You can leave this app.")
+                        Text(state.workVisibilityExplanation())
                         Text(state.stopExplanation(), style = MaterialTheme.typography.bodySmall)
                         OutlinedButton(onClick = viewModel::stop, enabled = !state.cancelling) { Text(state.stopActionLabel()) }
                     }
@@ -439,6 +457,25 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
             text = { Text("This removes $name from this app. Other transcripts and text files you saved elsewhere are kept.") },
             confirmButton = { TextButton(onClick = { deleteTranscriptId = null; viewModel.delete(id) }) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { deleteTranscriptId = null }) { Text("Cancel") } })
+    }
+    if (showPro) {
+        AlertDialog(onDismissRequest = { showPro = false }, title = { Text(if (pro.isPro) "Pro is active" else "Upgrade to Pro") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("One-time purchase. No ads or recording-length limit, plus background transcription. Processing stays on your phone; device memory, storage and Android background limits still apply.")
+                    Text("Restore on another Android phone using the same Google Play account. Transcript history restores separately through Android backup.")
+                    if (!pro.enabled) Text("Pro purchases are not available yet. All current transcription features remain available.")
+                    pro.message?.let { Text(it) }
+                    if (pro.busy) Text("Checking Google Play…")
+                    if (!pro.isPro) Button(onClick = { activity?.let { application.monetization.buy(it) } },
+                        enabled = pro.enabled && pro.checked && !pro.busy && !pro.pending && pro.price != null && activity != null) {
+                        Text(pro.price?.let { "Unlock Pro — $it once" } ?: "Unlock Pro")
+                    }
+                    OutlinedButton(onClick = application.monetization::refresh, enabled = pro.enabled && !pro.busy) { Text("Restore purchases") }
+                    if (ads.privacyOptionsRequired) TextButton(onClick = { activity?.let { application.ads.privacyOptions(it) } }, enabled = activity != null) { Text("Ad privacy choices") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showPro = false }) { Text("Close") } })
     }
     if (showLicenses) {
         val licenses = remember { context.assets.open("THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() } }

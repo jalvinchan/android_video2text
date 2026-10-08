@@ -140,7 +140,7 @@ class OfflinePipelineTest {
             app.startService(TranscriptionService.cancelIntent(app))
             withTimeout(30_000) { repository.state.first { it.stage == ProcessingStage.CANCELLED } }
             assertEquals(original, repository.state.value.transcript)
-            assertEquals(original, TranscriptStore(app.noBackupFilesDir).load())
+            assertEquals(original, TranscriptStore.forApp(app).load())
             val paused = repository.state.value.pendingJob!!
             assertTrue(paused.progressive)
             assertNotNull(paused.window)

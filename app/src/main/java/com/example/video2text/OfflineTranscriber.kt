@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import java.io.File
 
-internal class OfflineTranscriber(private val context: Context) {
+internal class OfflineTranscriber(private val context: Context, private val access: TranscriptionAccess = TranscriptionAccess()) {
     /** Fixture entry point; production keeps the job store across terminal paths. */
     suspend fun run(uri: Uri, directory: File, cancellation: ProcessingCancellation, options: TranscriptionOptions = TranscriptionOptions(), progress: (ProcessingStage, Int?) -> Unit): Transcript {
         require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "Select audio or video using the file picker or Android Share menu." }
@@ -22,6 +22,10 @@ internal class OfflineTranscriber(private val context: Context) {
         val options = requireNotNull(job.options)
         options.validate()
         cancellation.check()
+        if (job.needsModel) {
+            access.checkDuration(job.sourceDurationMs)
+            if (job.audioBytes != null) access.checkSamples(job.audioBytes / 4, job.audioOffsetMs ?: 0)
+        }
         // Retained full-PCM jobs keep their original plan/revision. New jobs use windows.
         if (job.progressive || !job.hasAudio) return resumeProgressive(job, store, cancellation, progress, checkpointed)
         var ready = job
@@ -83,6 +87,7 @@ internal class OfflineTranscriber(private val context: Context) {
                 fun processWindow() {
                     cancellation.check()
                     val window = requireNotNull(ready.window)
+                    access.checkSamples(window.coreEndSample.toLong(), ready.audioOffsetMs!!)
                     val sections = requireNotNull(ready.sections)
                     val base = sections.indexOfFirst { it.startSample >= window.coreStartSample }.let { if (it < 0) sections.size else it }
                     if (!window.planned || ready.completedSections < sections.size) {
@@ -136,6 +141,7 @@ internal class OfflineTranscriber(private val context: Context) {
                 if (!ready.extractionComplete) {
                     progress(ProcessingStage.EXTRACTING, null)
                     var offsetMs = 0L
+                    var decodedSamples = 0L
                     val windows = PcmWindows { start, coreStart, coreEnd, samples ->
                         cancellation.check()
                         if (coreEnd > ready.processedSamples) {
@@ -149,6 +155,7 @@ internal class OfflineTranscriber(private val context: Context) {
                     val timeline = MediaAudioDecoder().decodeSamples(store.source, cancellation::check,
                         { progress(ProcessingStage.EXTRACTING, it?.coerceAtMost(99)) }) { sample, offset ->
                         offsetMs = offset
+                        access.checkSamples(++decodedSamples, offset)
                         windows.push(sample)
                     }
                     windows.finish()

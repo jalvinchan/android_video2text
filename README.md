@@ -3,7 +3,8 @@
 Android 7.0+ app for offline English, Mandarin, and Cantonese transcription from
 audio and video. Import one file through the file picker or Android Share menu.
 A foreground service extracts its first audio track and runs CPU Whisper
-inference while the app is backgrounded or the screen is locked.
+inference. Pro (or unconfigured builds) can continue while backgrounded or locked;
+configured free runs pause when the app is hidden or the screen is locked.
 
 Follow **Import audio or video → Select language → Select model → Start transcription →
 Result**. Import and Android Share copy one source file into private durable storage;
@@ -69,8 +70,10 @@ starting. Base can be deleted and downloaded again. The small shared detector
 remains cached for other models. A Cantonese setup still
 requires selecting installed Turbo; a saved Turbo job requires downloading Turbo
 again to resume unfinished inference.
-Internet is used only for requested downloads. Installed models run in airplane
-mode. The app requests no microphone or broad storage permission.
+Without monetization deployment values, internet is used only for requested
+model downloads. Configured builds also use Google Play for purchases and AdMob
+for consent-gated free-plan ads. Recordings and transcripts are never sent to
+those SDKs. Installed models run in airplane mode. The app requests no microphone or broad storage permission.
 
 Results default to **Plain text**. **Timestamps** formats the same stored segments
 without running inference again. Search highlights matches. Copy, Share, and Save
@@ -81,8 +84,15 @@ Search history by filename or transcript text, then open a result to search its
 contents or use Copy/Share/Save in either format. Individual deletion requires
 confirmation and keeps other transcripts, unfinished work and exported files.
 
-History stores text and segment timestamps locally, outside Android backup.
-Clearing app data or uninstalling removes it; text files saved elsewhere survive.
+History stores text, timestamps, filenames and completion dates on the phone.
+Android can back up completed history to the user's system backup account and
+transfer it to another phone, according to system settings. Cloud backup requires
+client-side encryption on Android 9+; Android 7/8 use their system backup
+protection. Backup is scheduled by Android, has a 25 MB per-app cloud quota and
+is not immediate or a cross-device sync service. Clearing app data/uninstalling
+removes the local copy; recovery depends on an available system backup. Keep
+exported text files elsewhere as an additional copy. Models, original media,
+unfinished work, preferences and signed Pro credentials are excluded.
 A failed, paused or discarded job keeps completed history. The original saved
 result migrates automatically, preserving its text, timestamps and job ID; its
 saved-file modification date supplies the legacy completion date when available.
@@ -227,7 +237,7 @@ on startup.
 
 `Transcript` remains the canonical result. `TranscriptFormatter` owns both
 formats and export names. `SavedTranscript` adds an ID and completion date.
-`TranscriptStore` atomically rewrites `noBackupFilesDir/transcript-history.json`
+`TranscriptStore` atomically rewrites `filesDir/transcripts/transcript-history.json`
 when appending or deleting a result; this simple local store loads the history
 into memory and rewrites its text on changes. The repository serializes storage
 operations. Cancellation and successful commits share a commit boundary, with
@@ -264,3 +274,29 @@ Vendored libraries and model weights retain their respective licenses; see
 [third-party notices](app/src/main/assets/THIRD_PARTY_NOTICES.txt).
 Test recordings have separate terms and attribution in
 [fixture licenses](app/src/androidTest/assets/FIXTURE_LICENSES.txt).
+
+## Free plan and Pro
+
+The one-time `pro_unlock` purchase allows background transcription, removes ads
+and removes the free limit of
+5 minutes per recording, with the app visible and the phone unlocked. Saved history, exports and supported languages/models
+are available to both plans. Metadata is checked before inference; decoded
+sample counts enforce the limit even when duration metadata is absent or wrong.
+Limits never truncate a recording into a successful partial transcript. The
+source and saved checkpoints survive a limit failure; Pro can resume them.
+Each run takes an access snapshot at Start, so a purchase-status refresh does not
+change its limits. Free runs pause through the existing cancellation/checkpoint
+path when the app is hidden or the phone locks. Returning does not restart work
+automatically: tap Resume. Rotation and transient focus changes do not pause
+work. Android process lifecycle has a short delay when detecting backgrounding;
+native cancellation stops at an existing safe cancellation point. Pro removes the commercial duration restriction,
+not device memory/storage/codec or Android foreground-service limits.
+
+Purchases and free limits activate only when all deployment values are supplied.
+Unconfigured builds retain the current unrestricted offline behavior and make no
+ad requests. See [monetization setup](docs/MONETIZATION.md). Debug ad requests use
+Google's test banner, never a live ad unit. Billing is verified against the Play
+RSA public key, acknowledged before unlocking, never consumed and restored from
+Google Play on a new installation. A signed device-local cache preserves Pro
+offline; an online ownership refresh handles revocations. This uses client-side
+verification; there is no billing backend or cross-platform entitlement service.

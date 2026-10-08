@@ -1,36 +1,46 @@
 package com.example.video2text
 
 import android.util.AtomicFile
+import android.content.Context
 import java.io.File
 import java.io.IOException
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Local completed results, outside Android backup and separate from unfinished work. */
-internal class TranscriptStore(directory: File) {
+/** Completed results can be backed up; legacy data and activity markers stay device-local. */
+internal class TranscriptStore(directory: File, localDirectory: File = directory) {
+    companion object {
+        fun forApp(context: Context) = TranscriptStore(File(context.filesDir, "transcripts"), context.noBackupFilesDir)
+    }
     private val history = AtomicFile(File(directory, "transcript-history.json"))
-    private val legacy = AtomicFile(File(directory, "latest-transcript.json"))
-    private val active = AtomicFile(File(directory, "transcription-active"))
+    private val oldHistory = if (directory == localDirectory) null
+        else AtomicFile(File(localDirectory, "transcript-history.json"))
+    private val legacy = AtomicFile(File(localDirectory, "latest-transcript.json"))
+    private val active = AtomicFile(File(localDirectory, "transcription-active"))
 
     fun load(): Transcript? = loadHistory().firstOrNull()?.transcript
 
     fun loadHistory(): List<SavedTranscript> {
-        if (exists(history)) {
-            val json = read(history)
-            require(json.getInt("version") == 1) { "Unknown transcript history version." }
-            val list = json.getJSONArray("transcripts")
-            val entries = List(list.length()) { index ->
-                val item = list.getJSONObject(index)
-                SavedTranscript(item.getString("id"),
-                    if (item.has("completedAtMs")) item.getLong("completedAtMs") else null,
-                    decode(item.getJSONObject("transcript")))
-            }
-            require(entries.map { it.id }.distinct().size == entries.size)
-            val jobIds = entries.mapNotNull { it.transcript.jobId }
-            require(jobIds.distinct().size == jobIds.size)
+        val current = if (exists(history)) readHistory(history) else null
+        val previous = oldHistory?.takeIf { exists(it) }
+        if (previous != null) {
+            // Restart-safe migration, including when a restored history already exists.
+            // Conflicts preserve both files instead of silently discarding a result.
+            val entries = (current.orEmpty() + readHistory(previous)).groupBy { it.id }.map { (_, copies) ->
+                require(copies.all { it == copies.first() }) { "Conflicting saved transcript IDs." }
+                copies.first()
+            }.sortedByDescending { it.completedAtMs ?: Long.MIN_VALUE }
+            validateHistory(entries)
+            if (current != entries) write(entries)
+            previous.delete()
+            check(!exists(previous)) { "The old transcript history could not be removed. Check storage and retry." }
             removeLegacy()
             return entries
+        }
+        if (current != null) {
+            removeLegacy()
+            return current
         }
         if (!exists(legacy)) return emptyList()
         // Old records have no completion date. Retain their saved-file date when available.
@@ -41,6 +51,26 @@ internal class TranscriptStore(directory: File) {
         // Never remove the old record until the entire migrated history is committed.
         removeLegacy()
         return entries
+    }
+
+    private fun readHistory(file: AtomicFile): List<SavedTranscript> {
+        val json = read(file)
+        require(json.getInt("version") == 1) { "Unknown transcript history version." }
+        val list = json.getJSONArray("transcripts")
+        val entries = List(list.length()) { index ->
+            val item = list.getJSONObject(index)
+            SavedTranscript(item.getString("id"),
+                if (item.has("completedAtMs")) item.getLong("completedAtMs") else null,
+                decode(item.getJSONObject("transcript")))
+        }
+        validateHistory(entries)
+        return entries
+    }
+
+    private fun validateHistory(entries: List<SavedTranscript>) {
+        require(entries.map { it.id }.distinct().size == entries.size)
+        val jobIds = entries.mapNotNull { it.transcript.jobId }
+        require(jobIds.distinct().size == jobIds.size) { "Conflicting completed transcription jobs." }
     }
 
     fun save(transcript: Transcript, cancellation: ProcessingCancellation): List<SavedTranscript> {

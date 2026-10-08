@@ -1,5 +1,11 @@
 package com.example.video2text
 
+internal fun TranscriptionState.workVisibilityExplanation(): String = when {
+    activeOptions == null -> "Importing media. Keep this app open until the copy is saved."
+    !activeBackgroundAllowed -> "Keep this app visible and your phone unlocked. Free transcription pauses if you switch apps or lock the phone; saved progress is kept."
+    else -> "Processing continues with the screen locked. You can leave this app."
+}
+
 // Share stop wording between the processing screen and foreground notification.
 internal fun TranscriptionState.stopActionLabel(): String = when {
     activeOptions == null -> "Cancel import"
