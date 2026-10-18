@@ -38,8 +38,15 @@ internal fun TranscriptionJob.resumeExplanation(): String = when {
 internal fun ProcessingStage.label(): String = when (this) {
     ProcessingStage.IDLE -> "Ready to import"
     ProcessingStage.PREPARING -> "Preparing media or offline model"
-    ProcessingStage.EXTRACTING, ProcessingStage.TRANSCRIBING -> "Transcribing speech"
+    ProcessingStage.EXTRACTING, ProcessingStage.TRANSCRIBING -> "Converting to text"
     ProcessingStage.COMPLETED -> "Transcription complete"
     ProcessingStage.CANCELLED -> "Processing stopped"
     ProcessingStage.FAILED -> "Unable to finish transcription"
+}
+
+// Extraction and recognition alternate per audio window, so the title stays fixed and this line names the current step.
+internal fun ProcessingStage.activityLabel(job: TranscriptionJob?): String? = when (this) {
+    ProcessingStage.EXTRACTING -> if (job?.sourceHasVideo == false) "Reading audio…" else "Extracting audio…"
+    ProcessingStage.TRANSCRIBING -> "Recognizing speech…"
+    else -> null
 }

@@ -83,6 +83,8 @@ internal class OfflineTranscriber(private val context: Context, private val acce
             val models = (context.applicationContext as TranscriptionApplication).models
             val prepared = models.acquire(options, cancellation) { progress(ProcessingStage.PREPARING, it) }
             var session: WhisperBridge.Session? = null
+            // Decoding runs ahead of recognition, so overall progress follows transcribed time and holds steady between windows.
+            var transcribedPercent: Int? = ready.sourceDurationMs?.takeIf { it > 0 }?.let { (((ready.audioOffsetMs ?: 0) + ready.processedSamples.toLong() * 1000 / PCM_RATE) * 100 / it).toInt().coerceIn(0, 99) }
             try {
                 fun processWindow() {
                     cancellation.check()
@@ -94,7 +96,8 @@ internal class OfflineTranscriber(private val context: Context, private val acce
                         val current = mutableListOf<TranscriptSegment>()
                         fun report(percent: Int) {
                             val timeMs = ready.audioOffsetMs!! + (window.startSample.toLong() + window.samples.toLong() * percent / 100) * 1000 / PCM_RATE
-                            progress(ProcessingStage.TRANSCRIBING, ready.sourceDurationMs?.takeIf { it > 0 }?.let { (timeMs * 100 / it).toInt().coerceIn(0, 99) })
+                            ready.sourceDurationMs?.takeIf { it > 0 }?.let { transcribedPercent = (timeMs * 100 / it).toInt().coerceIn(0, 99) }
+                            progress(ProcessingStage.TRANSCRIBING, transcribedPercent)
                         }
                         report(0)
                         cancellation.check()
@@ -139,7 +142,7 @@ internal class OfflineTranscriber(private val context: Context, private val acce
                 // Reuse committed PCM before restarting the decoder. An unfinished section repeats.
                 if (ready.window != null) processWindow()
                 if (!ready.extractionComplete) {
-                    progress(ProcessingStage.EXTRACTING, null)
+                    progress(ProcessingStage.EXTRACTING, transcribedPercent)
                     var offsetMs = 0L
                     var decodedSamples = 0L
                     val windows = PcmWindows { start, coreStart, coreEnd, samples ->
@@ -149,11 +152,11 @@ internal class OfflineTranscriber(private val context: Context, private val acce
                             ready = store.retainWindow(ready, start, coreStart, coreEnd, samples, offsetMs, cancellation)
                             checkpointed(ready)
                             processWindow()
-                            progress(ProcessingStage.EXTRACTING, null)
+                            progress(ProcessingStage.EXTRACTING, transcribedPercent)
                         }
                     }
                     val timeline = MediaAudioDecoder().decodeSamples(store.source, cancellation::check,
-                        { progress(ProcessingStage.EXTRACTING, it?.coerceAtMost(99)) }) { sample, offset ->
+                        { progress(ProcessingStage.EXTRACTING, transcribedPercent) }) { sample, offset ->
                         offsetMs = offset
                         access.checkSamples(++decodedSamples, offset)
                         windows.push(sample)

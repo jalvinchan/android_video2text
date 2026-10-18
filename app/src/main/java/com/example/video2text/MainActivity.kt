@@ -76,6 +76,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.video2text.ui.theme.Video2textTheme
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: TranscriptionViewModel
@@ -353,6 +354,11 @@ private fun TranscriptionScreen(viewModel: TranscriptionViewModel) {
                 Card(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (state.cancelling) state.stoppingLabel() else state.stage.label(), style = MaterialTheme.typography.titleMedium)
+                        val activity = state.stage.activityLabel(state.pendingJob)
+                        var shownActivity by remember { mutableStateOf(activity) }
+                        // Short decode bursts between windows should not flash the step line.
+                        LaunchedEffect(activity) { if (shownActivity != null) delay(500); shownActivity = activity }
+                        if (!state.cancelling) shownActivity?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                         val percent = state.percent
                         if (percent == null || state.cancelling) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else {

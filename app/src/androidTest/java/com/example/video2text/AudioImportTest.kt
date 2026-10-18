@@ -72,7 +72,8 @@ class AudioImportTest {
                 assertNull(imported.options)
                 assertFalse(imported.hasAudio)
                 assertTrue(imported.sourceDurationMs!! > 10_000)
-                assertEquals("Transcribing speech", ProcessingStage.EXTRACTING.label())
+                assertEquals("Converting to text", ProcessingStage.EXTRACTING.label())
+                assertEquals("Reading audio…", ProcessingStage.EXTRACTING.activityLabel(imported))
                 val fixed = imported.copy(options = TranscriptionOptions(SpeechLanguage.ENGLISH))
                 store.save(fixed)
                 val cancelled = ProcessingCancellation().apply { cancel() }
@@ -122,7 +123,8 @@ class AudioImportTest {
             json.remove("sourceHasVideo")
             record.writeText(json.toString())
             assertEquals(fixed, TranscriptionJobStore(store.directory.parentFile!!).load())
-            assertEquals("Transcribing speech", ProcessingStage.EXTRACTING.label())
+            assertEquals("Converting to text", ProcessingStage.EXTRACTING.label())
+            assertEquals("Extracting audio…", ProcessingStage.EXTRACTING.activityLabel(fixed))
         } finally { root.deleteRecursively() }
     }
 
