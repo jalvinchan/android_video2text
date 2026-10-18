@@ -251,17 +251,13 @@ history ID so rotation and exports keep the opened result.
 
 ## Verification limits
 
-See [Progress and feature backlog](docs/PROGRESS_AND_NEXT_STEPS.md) for possible
-features to add, their recommended order, and outstanding verification work.
-
 Emulator verification covers builds for both ABIs, unit tests, lint, native
 fixtures, persistence/exports, download policy and recovery, and atomic model
 installation. Current audio-import, progressive-pipeline, transcript-history,
 UI/export and legacy-recovery checks passed on the ARM64 API 37 emulator, along
 with explicit process-death phases and processing Pause/Resume UI checks.
 MP3/raw AAC inputs, physical-device codec backpressure and the transient import
-cancellation UI remain unverified; no speed improvement has been measured. See
-[docs/VERIFICATION.md](docs/VERIFICATION.md) for measured results.
+cancellation UI remain unverified; no speed improvement has been measured.
 
 Cantonese accuracy beyond the included fixture and larger-model performance on
 physical phones remain unverified. The physical-phone benchmark was not resumed.
@@ -296,7 +292,7 @@ not device memory/storage/codec or Android foreground-service limits.
 
 Purchases and free limits activate only when all deployment values are supplied.
 Unconfigured builds retain the current unrestricted offline behavior and make no
-ad requests. See [monetization setup](docs/MONETIZATION.md). Debug ad requests use
+ad requests. Debug ad requests use
 Google's test banner, never a live ad unit. Billing is verified against the Play
 RSA public key, acknowledged before unlocking, never consumed and restored from
 Google Play on a new installation. A signed device-local cache preserves Pro
